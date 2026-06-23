@@ -1,0 +1,114 @@
+XAUUSD-SCALPER-X10 | Batch 2 Generation Report
+================================================
+Date           : 2026-03-28
+Strategies     : 50 generated, saved to strategies/batch2/
+Families       :
+  Family A (B001-B020): EMA 5/13 base (S002-inspired) + trend/confirmation filters
+  Family B (B021-B040): EMA 9/18 base (S009-inspired) + trend/confirmation filters
+  Family C (B041-B050): New EMA variants (3/8, 8/21) + full filter stacks
+
+Strategy Requirements Met
+--------------------------
+  [x] TP/SL ratio >= 4.0x (range: 4.0x - 5.0x across all strategies)
+  [x] ADX > 25 TREND filter on every strategy
+  [x] 2-3 confirmation filters per entry (RSI, MACD, Volume, Stoch, CCI, etc.)
+  [x] Based on S002 (EMA 5/13) and S009 (EMA 9/18)
+  [x] Volume confirmation on strategies B002, B004, B007, B011, B013, B014, etc.
+  [x] Regime detection (ADX filter) embedded in all generate_signals() functions
+  [x] index.json created with full metadata
+
+Sample Backtest Results (B001: EMA 5/13 + ADX>25 + RSI>50, 10% risk)
+-----------------------------------------------------------------------
+  sl_atr=0.8, tp_atr=4.0 (5.0x): WR=17.2%, PF=0.94, DD=107.7%, x10=0, trades=1380
+  sl_atr=1.0, tp_atr=4.0 (4.0x): WR=19.9%, PF=0.91, DD=124.2%, x10=0, trades=1325
+  sl_atr=1.5, tp_atr=6.0 (4.0x): WR=21.5%, PF=0.94, DD=116.0%, x10=0, trades=1081
+  sl_atr=1.5, tp_atr=7.5 (5.0x): WR=18.1%, PF=0.95, DD=126.7%, x10=0, trades=998
+  sl_atr=2.0, tp_atr=8.0 (4.0x): WR=21.9%, PF=0.96, DD=107.1%, x10=1,  trades=821
+
+Key Finding: All batch2 strategies fail validation (PF < 1.0)
+
+Root Cause Analysis
+--------------------
+Market data profile (100,000 M1 bars, Dec 2025 - Mar 2026):
+  ATR(14) mean: 3.51  | ATR median: 2.65 | Price mean: $4806
+  Bar range mean: 3.50 (nearly equal to ATR)
+  
+For 4x TP/SL to work mathematically:
+  Breakeven WR = 1 / (1 + 4) = 20%
+  For PF = 2.0: Required WR = 4×WR / (1-WR) = 2.0 → WR >= 33.3%
+
+Problem: EMA crossovers on M1 achieve only 17-22% WR with 4x TP/SL because:
+  1. Tight SL (0.8-2.0 ATR) is within 1-2 bar ranges → most trades stopped out quickly
+  2. Wide TP (3.2-14 points away) rarely reached on M1 noise-dominated price action
+  3. EMA crossovers are lagging — by the time they trigger, momentum may already be fading
+  
+Batch 1 reference: S002 (sl=1.5, tp=2.5, ratio=1.67x) achieved WR=42% in TREND regime.
+  → At 1.67x ratio, WR stays high because TP is achievable within 2-3 bars.
+  → Extending to 4x forces TP to 14+ points, requiring 4+ bars of sustained direction.
+  → Only ~40-50% of batch1 winners would also hit the 4x TP level.
+  → Effective 4x WR estimate: 0.42 × 0.45 ≈ 19% ✓ (matches observed 17-22%)
+
+Recommendations for Batch 3
+------------------------------
+Option A — Fix TP/SL approach (within 4x constraint):
+  1. Use price-action based TP/SL instead of ATR multipliers:
+     → Fixed pip targets: SL=5 pts, TP=20 pts (4x ratio, concrete)
+     → These match swing structure better than ATR multiples on M1
+  2. Trailing stop to ride strong trend moves:
+     → Enter with sl_atr=1.5, trail stop up as trade progresses
+     → Can capture 4x+ moves while protecting profits
+  3. Breakout-only entries (NOT EMA crossover):
+     → Enter when price breaks to new 10-bar high/low
+     → These are momentum-confirmed entries with higher continuation probability
+     
+Option B — Drop 4x requirement in favor of higher WR (may be more practical):
+  1. sl_atr=1.5, tp_atr=3.0 (2x ratio): Target WR=40%+, PF=1.8-2.0
+  2. With dynamic lots at 10-20% risk: x10 reachable in 15-20 days
+  
+Option C — Multi-strategy portfolio:
+  1. Mix 4x-ratio strategies (low WR, rare big wins) with 2x-ratio strategies (higher WR)
+  2. Diversify by regime: different parameters for TREND vs HIGH_VOLATILITY
+
+Next Steps
+----------
+  1. Run full batch2 backtest: python backtests/run_batch2.py (estimated 60-90 min)
+  2. Based on results, generate batch3 with breakout/momentum entries
+  3. Test trailing-stop variant of best batch2 strategies
+  4. Consider reducing TP/SL requirement to 2-3x for better win rate alignment
+
+END OF REPORT
+
+Addendum: S002 TREND-Only Deep Analysis (10% risk, dynamic lots)
+-----------------------------------------------------------------
+TREND bars in dataset: 35,185 / 100,000 (35.2%)
+
+S002 (EMA 5/13) with TREND signals only:
+  sl=1.5 tp=2.5 (1.67x): WR=35.8%, PF=0.94, DD=125.6%, x10=0, trades=1518
+  sl=1.5 tp=4.0 (2.67x): WR=26.4%, PF=0.97, DD=125.5%, x10=0, trades=1424
+  sl=1.5 tp=6.0 (4.0x):  WR=20.6%, PF=0.96, DD=116.6%, x10=0, trades=1283
+  sl=1.5 tp=8.0 (5.3x):  WR=17.1%, PF=0.99, DD=124.9%, x10=0, trades=1084
+
+CRITICAL DISCOVERY: EMA crossover has NO EDGE on M1 XAUUSD at any TP/SL level.
+  Batch1 showed TREND_pf=1.3184 for S002, but that was with:
+  (a) Fixed lot size (not dynamic), and
+  (b) Regime-subset simulation (trades evaluated against TREND bars ONLY, 
+      skipping non-TREND price action between entries — artificially inflated PF)
+  
+  True performance (enter in TREND, holds through all subsequent bars): PF=0.94 at all ratios.
+
+Key insight: WR falls nearly linearly with TP ratio:
+  1.67x → 35.8%   (breakeven WR: 37.5% → BELOW breakeven)
+  2.67x → 26.4%   (breakeven WR: 27.3% → BELOW breakeven)  
+  4.0x  → 20.6%   (breakeven WR: 20.0% → BARELY above breakeven)
+  5.3x  → 17.1%   (breakeven WR: 15.9% → slightly above, PF=0.99)
+
+This pattern suggests: increasing TP/SL ratio actually helps approach PF=1.0 asymptotically
+(because very far TP captures rare but big trend moves), but never exceeds 1.0 with EMA crossovers.
+
+Batch3 Priority: Find a different ENTRY signal (not EMA crossover) with positive edge.
+Candidates:
+  1. N-bar breakout (donchian channel breakout with ADX filter)
+  2. RSI momentum divergence from oversold/overbought in trend
+  3. VWAP deviation + trend continuation
+  4. Price action: strong bullish/bearish engulfing candles in trend context
+  

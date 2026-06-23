@@ -1,0 +1,831 @@
+[
+  {
+    "id": "S001",
+    "name": "EMA_3_8_Cross",
+    "file": "strategy_s001.py",
+    "family": "EMA",
+    "description": "EMA 3/8 fast crossover scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 8,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S002",
+    "name": "EMA_5_13_Cross",
+    "file": "strategy_s002.py",
+    "family": "EMA",
+    "description": "EMA 5/13 crossover scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 13,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S003",
+    "name": "EMA_8_21_Cross",
+    "file": "strategy_s003.py",
+    "family": "EMA",
+    "description": "EMA 8/21 crossover scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 8,
+      "ema_slow": 21,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S004",
+    "name": "EMA_10_20_Cross",
+    "file": "strategy_s004.py",
+    "family": "EMA",
+    "description": "EMA 10/20 crossover scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 10,
+      "ema_slow": 20,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S005",
+    "name": "EMA_3_13_Cross",
+    "file": "strategy_s005.py",
+    "family": "EMA",
+    "description": "EMA 3/13 aggressive scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 13,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S006",
+    "name": "EMA_5_21_Cross",
+    "file": "strategy_s006.py",
+    "family": "EMA",
+    "description": "EMA 5/21 medium scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 21,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S007",
+    "name": "EMA_3_21_Cross",
+    "file": "strategy_s007.py",
+    "family": "EMA",
+    "description": "EMA 3/21 wide-span scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 21,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S008",
+    "name": "EMA_7_14_Cross",
+    "file": "strategy_s008.py",
+    "family": "EMA",
+    "description": "EMA 7/14 harmonic scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 7,
+      "ema_slow": 14,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S009",
+    "name": "EMA_9_18_Cross",
+    "file": "strategy_s009.py",
+    "family": "EMA",
+    "description": "EMA 9/18 double-period scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 9,
+      "ema_slow": 18,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S010",
+    "name": "EMA_4_12_Cross",
+    "file": "strategy_s010.py",
+    "family": "EMA",
+    "description": "EMA 4/12 triple-factor scalp",
+    "template": "ema_cross",
+    "params": {
+      "ema_fast": 4,
+      "ema_slow": 12,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S011",
+    "name": "RSI_14_30_70",
+    "file": "strategy_s011.py",
+    "family": "RSI",
+    "description": "RSI 14 with classic 30/70 levels",
+    "template": "rsi_reversal",
+    "params": {
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S012",
+    "name": "RSI_7_25_75",
+    "file": "strategy_s012.py",
+    "family": "RSI",
+    "description": "RSI 7 extreme scalp",
+    "template": "rsi_reversal",
+    "params": {
+      "rsi_period": 7,
+      "rsi_ob": 75,
+      "rsi_os": 25,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S013",
+    "name": "RSI_21_35_65",
+    "file": "strategy_s013.py",
+    "family": "RSI",
+    "description": "RSI 21 conservative scalp",
+    "template": "rsi_reversal",
+    "params": {
+      "rsi_period": 21,
+      "rsi_ob": 65,
+      "rsi_os": 35,
+      "atr_period": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S014",
+    "name": "RSI_9_20_80",
+    "file": "strategy_s014.py",
+    "family": "RSI",
+    "description": "RSI 9 extreme reversal scalp",
+    "template": "rsi_reversal",
+    "params": {
+      "rsi_period": 9,
+      "rsi_ob": 80,
+      "rsi_os": 20,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S015",
+    "name": "RSI_14_40_60",
+    "file": "strategy_s015.py",
+    "family": "RSI",
+    "description": "RSI 14 tight mid-band scalp",
+    "template": "rsi_reversal",
+    "params": {
+      "rsi_period": 14,
+      "rsi_ob": 60,
+      "rsi_os": 40,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 1.5
+    }
+  },
+  {
+    "id": "S016",
+    "name": "BB_20_2_Breakout",
+    "file": "strategy_s016.py",
+    "family": "BB",
+    "description": "BB(20,2) standard breakout",
+    "template": "bb_breakout",
+    "params": {
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S017",
+    "name": "BB_10_1p5_Breakout",
+    "file": "strategy_s017.py",
+    "family": "BB",
+    "description": "BB(10,1.5) tight breakout",
+    "template": "bb_breakout",
+    "params": {
+      "bb_period": 10,
+      "bb_std": 1.5,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S018",
+    "name": "BB_20_2p5_Breakout",
+    "file": "strategy_s018.py",
+    "family": "BB",
+    "description": "BB(20,2.5) wide-band breakout",
+    "template": "bb_breakout",
+    "params": {
+      "bb_period": 20,
+      "bb_std": 2.5,
+      "atr_period": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 4.0
+    }
+  },
+  {
+    "id": "S019",
+    "name": "BB_14_2_Breakout",
+    "file": "strategy_s019.py",
+    "family": "BB",
+    "description": "BB(14,2) mid-period breakout",
+    "template": "bb_breakout",
+    "params": {
+      "bb_period": 14,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S020",
+    "name": "BB_20_2_Reversion",
+    "file": "strategy_s020.py",
+    "family": "BB",
+    "description": "BB(20,2) mean reversion scalp",
+    "template": "bb_reversion",
+    "params": {
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S021",
+    "name": "MACD_12_26_9_Cross",
+    "file": "strategy_s021.py",
+    "family": "MACD",
+    "description": "MACD(12,26,9) classic line crossover",
+    "template": "macd_cross",
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S022",
+    "name": "MACD_5_13_5_Cross",
+    "file": "strategy_s022.py",
+    "family": "MACD",
+    "description": "MACD(5,13,5) fast scalp crossover",
+    "template": "macd_cross",
+    "params": {
+      "macd_fast": 5,
+      "macd_slow": 13,
+      "macd_signal": 5,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S023",
+    "name": "MACD_8_21_5_Cross",
+    "file": "strategy_s023.py",
+    "family": "MACD",
+    "description": "MACD(8,21,5) medium scalp crossover",
+    "template": "macd_cross",
+    "params": {
+      "macd_fast": 8,
+      "macd_slow": 21,
+      "macd_signal": 5,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S024",
+    "name": "MACD_3_10_5_Cross",
+    "file": "strategy_s024.py",
+    "family": "MACD",
+    "description": "MACD(3,10,5) ultra-fast scalp",
+    "template": "macd_cross",
+    "params": {
+      "macd_fast": 3,
+      "macd_slow": 10,
+      "macd_signal": 5,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S025",
+    "name": "MACD_12_26_9_Histogram",
+    "file": "strategy_s025.py",
+    "family": "MACD",
+    "description": "MACD(12,26,9) histogram zero-cross",
+    "template": "macd_histogram",
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S026",
+    "name": "ATR_Breakout_14",
+    "file": "strategy_s026.py",
+    "family": "ATR",
+    "description": "ATR(14) channel breakout",
+    "template": "atr_breakout",
+    "params": {
+      "atr_period": 14,
+      "atr_mult": 1.0,
+      "lookback": 10,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S027",
+    "name": "ATR_Breakout_7",
+    "file": "strategy_s027.py",
+    "family": "ATR",
+    "description": "ATR(7) fast channel breakout",
+    "template": "atr_breakout",
+    "params": {
+      "atr_period": 7,
+      "atr_mult": 1.0,
+      "lookback": 5,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S028",
+    "name": "ATR_Channel_20",
+    "file": "strategy_s028.py",
+    "family": "ATR",
+    "description": "ATR(20) trend channel scalp",
+    "template": "atr_breakout",
+    "params": {
+      "atr_period": 20,
+      "atr_mult": 1.5,
+      "lookback": 15,
+      "sl_atr": 2.0,
+      "tp_atr": 3.5
+    }
+  },
+  {
+    "id": "S029",
+    "name": "ATR_Momentum_10",
+    "file": "strategy_s029.py",
+    "family": "ATR",
+    "description": "ATR(10) momentum squeeze",
+    "template": "atr_breakout",
+    "params": {
+      "atr_period": 10,
+      "atr_mult": 0.75,
+      "lookback": 8,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S030",
+    "name": "ATR_MeanReversion_14",
+    "file": "strategy_s030.py",
+    "family": "ATR",
+    "description": "ATR(14) mean reversion scalp",
+    "template": "atr_reversion",
+    "params": {
+      "atr_period": 14,
+      "atr_mult": 1.5,
+      "lookback": 10,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S031",
+    "name": "EMA_3_8_RSI_14",
+    "file": "strategy_s031.py",
+    "family": "EMA+RSI",
+    "description": "EMA 3/8 cross + RSI 14 filter",
+    "template": "ema_rsi",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 8,
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S032",
+    "name": "EMA_5_13_RSI_7",
+    "file": "strategy_s032.py",
+    "family": "EMA+RSI",
+    "description": "EMA 5/13 cross + RSI 7 filter",
+    "template": "ema_rsi",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 13,
+      "rsi_period": 7,
+      "rsi_ob": 75,
+      "rsi_os": 25,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S033",
+    "name": "EMA_8_21_RSI_14",
+    "file": "strategy_s033.py",
+    "family": "EMA+RSI",
+    "description": "EMA 8/21 cross + RSI 14 filter",
+    "template": "ema_rsi",
+    "params": {
+      "ema_fast": 8,
+      "ema_slow": 21,
+      "rsi_period": 14,
+      "rsi_ob": 65,
+      "rsi_os": 35,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S034",
+    "name": "EMA_3_13_RSI_9",
+    "file": "strategy_s034.py",
+    "family": "EMA+RSI",
+    "description": "EMA 3/13 cross + RSI 9 filter",
+    "template": "ema_rsi",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 13,
+      "rsi_period": 9,
+      "rsi_ob": 75,
+      "rsi_os": 25,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S035",
+    "name": "EMA_10_20_RSI_21",
+    "file": "strategy_s035.py",
+    "family": "EMA+RSI",
+    "description": "EMA 10/20 cross + RSI 21 filter",
+    "template": "ema_rsi",
+    "params": {
+      "ema_fast": 10,
+      "ema_slow": 20,
+      "rsi_period": 21,
+      "rsi_ob": 65,
+      "rsi_os": 35,
+      "atr_period": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 3.5
+    }
+  },
+  {
+    "id": "S036",
+    "name": "EMA_5_21_BB_20_2",
+    "file": "strategy_s036.py",
+    "family": "EMA+BB",
+    "description": "EMA 5/21 cross + BB(20,2) confirmation",
+    "template": "ema_bb",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 21,
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S037",
+    "name": "EMA_8_21_BB_14_2",
+    "file": "strategy_s037.py",
+    "family": "EMA+BB",
+    "description": "EMA 8/21 cross + BB(14,2) confirmation",
+    "template": "ema_bb",
+    "params": {
+      "ema_fast": 8,
+      "ema_slow": 21,
+      "bb_period": 14,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S038",
+    "name": "EMA_3_8_BB_20_2p5",
+    "file": "strategy_s038.py",
+    "family": "EMA+BB",
+    "description": "EMA 3/8 cross + BB(20,2.5) expansion",
+    "template": "ema_bb",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 8,
+      "bb_period": 20,
+      "bb_std": 2.5,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S039",
+    "name": "EMA_10_20_BB_20_2",
+    "file": "strategy_s039.py",
+    "family": "EMA+BB",
+    "description": "EMA 10/20 cross + BB(20,2) filter",
+    "template": "ema_bb",
+    "params": {
+      "ema_fast": 10,
+      "ema_slow": 20,
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 3.5
+    }
+  },
+  {
+    "id": "S040",
+    "name": "EMA_5_13_BB_10_1p5",
+    "file": "strategy_s040.py",
+    "family": "EMA+BB",
+    "description": "EMA 5/13 cross + BB(10,1.5) tight filter",
+    "template": "ema_bb",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 13,
+      "bb_period": 10,
+      "bb_std": 1.5,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S041",
+    "name": "MACD_12_26_9_RSI_14",
+    "file": "strategy_s041.py",
+    "family": "MACD+RSI",
+    "description": "MACD(12,26,9) cross + RSI 14 filter",
+    "template": "macd_rsi",
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S042",
+    "name": "MACD_5_13_5_RSI_7",
+    "file": "strategy_s042.py",
+    "family": "MACD+RSI",
+    "description": "MACD(5,13,5) cross + RSI 7 filter",
+    "template": "macd_rsi",
+    "params": {
+      "macd_fast": 5,
+      "macd_slow": 13,
+      "macd_signal": 5,
+      "rsi_period": 7,
+      "rsi_ob": 75,
+      "rsi_os": 25,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S043",
+    "name": "MACD_8_21_5_RSI_14",
+    "file": "strategy_s043.py",
+    "family": "MACD+RSI",
+    "description": "MACD(8,21,5) cross + RSI 14 filter",
+    "template": "macd_rsi",
+    "params": {
+      "macd_fast": 8,
+      "macd_slow": 21,
+      "macd_signal": 5,
+      "rsi_period": 14,
+      "rsi_ob": 65,
+      "rsi_os": 35,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S044",
+    "name": "MACD_3_10_5_RSI_9",
+    "file": "strategy_s044.py",
+    "family": "MACD+RSI",
+    "description": "MACD(3,10,5) cross + RSI 9 filter",
+    "template": "macd_rsi",
+    "params": {
+      "macd_fast": 3,
+      "macd_slow": 10,
+      "macd_signal": 5,
+      "rsi_period": 9,
+      "rsi_ob": 80,
+      "rsi_os": 20,
+      "atr_period": 14,
+      "sl_atr": 1.0,
+      "tp_atr": 2.0
+    }
+  },
+  {
+    "id": "S045",
+    "name": "MACD_12_26_9_RSI_21",
+    "file": "strategy_s045.py",
+    "family": "MACD+RSI",
+    "description": "MACD(12,26,9) cross + RSI 21 slow filter",
+    "template": "macd_rsi",
+    "params": {
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "rsi_period": 21,
+      "rsi_ob": 65,
+      "rsi_os": 35,
+      "atr_period": 14,
+      "sl_atr": 2.0,
+      "tp_atr": 3.5
+    }
+  },
+  {
+    "id": "S046",
+    "name": "EMA_5_13_RSI_14_BB_20_2",
+    "file": "strategy_s046.py",
+    "family": "EMA+RSI+BB",
+    "description": "EMA 5/13 + RSI 14 + BB(20,2) triple confluence",
+    "template": "ema_rsi_bb",
+    "params": {
+      "ema_fast": 5,
+      "ema_slow": 13,
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S047",
+    "name": "EMA_8_21_MACD_12_26_9_RSI_14",
+    "file": "strategy_s047.py",
+    "family": "EMA+MACD+RSI",
+    "description": "EMA 8/21 + MACD(12,26,9) + RSI 14 triple confluence",
+    "template": "ema_macd_rsi",
+    "params": {
+      "ema_fast": 8,
+      "ema_slow": 21,
+      "macd_fast": 12,
+      "macd_slow": 26,
+      "macd_signal": 9,
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  },
+  {
+    "id": "S048",
+    "name": "EMA_3_8_RSI_7_ATR_14",
+    "file": "strategy_s048.py",
+    "family": "EMA+RSI+ATR",
+    "description": "EMA 3/8 + RSI 7 + ATR(14) triple confluence",
+    "template": "ema_rsi_atr",
+    "params": {
+      "ema_fast": 3,
+      "ema_slow": 8,
+      "rsi_period": 7,
+      "rsi_ob": 75,
+      "rsi_os": 25,
+      "atr_period": 14,
+      "atr_mult": 1.0,
+      "sl_atr": 1.0,
+      "tp_atr": 2.5
+    }
+  },
+  {
+    "id": "S049",
+    "name": "EMA_10_20_BB_20_2_ATR_14",
+    "file": "strategy_s049.py",
+    "family": "EMA+BB+ATR",
+    "description": "EMA 10/20 + BB(20,2) + ATR(14) triple confluence",
+    "template": "ema_bb_atr",
+    "params": {
+      "ema_fast": 10,
+      "ema_slow": 20,
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "atr_mult": 1.0,
+      "sl_atr": 2.0,
+      "tp_atr": 3.5
+    }
+  },
+  {
+    "id": "S050",
+    "name": "MACD_5_13_5_RSI_14_BB_20_2",
+    "file": "strategy_s050.py",
+    "family": "MACD+RSI+BB",
+    "description": "MACD(5,13,5) + RSI 14 + BB(20,2) triple confluence",
+    "template": "macd_rsi_bb",
+    "params": {
+      "macd_fast": 5,
+      "macd_slow": 13,
+      "macd_signal": 5,
+      "rsi_period": 14,
+      "rsi_ob": 70,
+      "rsi_os": 30,
+      "bb_period": 20,
+      "bb_std": 2.0,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 3.0
+    }
+  }
+]

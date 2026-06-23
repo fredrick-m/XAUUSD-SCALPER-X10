@@ -1,0 +1,138 @@
+============================================================
+XAUUSD-SCALPER-X10  |  Batch Backtest Engine
+Balance: $1,000  |  Lot: 0.01
+============================================================
+
+Loading M1 data...
+  Bars loaded : 100,000
+  Date range  : 2025-12-12 20:56:00 to 2026-03-27 20:57:00
+
+Regime distribution:
+  RANGE               : 38,731 bars (38.7%)
+  TREND               : 35,185 bars (35.2%)
+  MIXED               : 20,017 bars (20.0%)
+  HIGH_VOLATILITY     : 5,968 bars (6.0%)
+  UNKNOWN             : 99 bars (0.1%)
+
+  Valid regimes for testing: ['TREND', 'RANGE', 'HIGH_VOLATILITY']
+
+Strategies found: 50
+
+  [S001] strategy_s001.py  FAIL  [WR 37.8% <= 62%; PF 1.03 < 2.0; DD 47.8% >= 35%; x10_count 0 < 5]
+
+  [S002] strategy_s002.py  FAIL  [WR 37.9% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S003] strategy_s003.py  FAIL  [WR 34.0% <= 62%; PF 1.06 < 2.0; x10_count 0 < 5]
+
+  [S004] strategy_s004.py  FAIL  [WR 33.5% <= 62%; PF 1.02 < 2.0; DD 35.0% >= 35%; x10_count 0 < 5]
+
+  [S005] strategy_s005.py  FAIL  [WR 33.5% <= 62%; PF 1.04 < 2.0; x10_count 0 < 5]
+
+  [S006] strategy_s006.py  FAIL  [WR 33.0% <= 62%; PF 1.00 < 2.0; DD 43.0% >= 35%; x10_count 0 < 5]
+
+  [S007] strategy_s007.py  FAIL  [WR 28.0% <= 62%; PF 0.97 < 2.0; DD 50.2% >= 35%; x10_count 0 < 5]
+
+  [S008] strategy_s008.py  FAIL  [WR 37.6% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S009] strategy_s009.py  FAIL  [WR 33.9% <= 62%; PF 1.08 < 2.0; x10_count 0 < 5]
+
+  [S010] strategy_s010.py  FAIL  [WR 37.1% <= 62%; PF 0.98 < 2.0; DD 65.6% >= 35%; x10_count 0 < 5]
+
+  [S011] strategy_s011.py  FAIL  [WR 37.5% <= 62%; PF 1.08 < 2.0; x10_count 0 < 5]
+
+  [S012] strategy_s012.py  FAIL  [WR 32.8% <= 62%; PF 1.01 < 2.0; x10_count 0 < 5]
+
+  [S013] strategy_s013.py  FAIL  [WR 39.0% <= 62%; PF 0.98 < 2.0; DD 51.5% >= 35%; x10_count 0 < 5]
+
+  [S014] strategy_s014.py  FAIL  [WR 29.3% <= 62%; PF 1.11 < 2.0; x10_count 0 < 5]
+
+  [S015] strategy_s015.py  FAIL  [WR 40.2% <= 62%; PF 1.02 < 2.0; x10_count 0 < 5]
+
+  [S016] strategy_s016.py  FAIL  [WR 33.7% <= 62%; PF 1.02 < 2.0; DD 43.4% >= 35%; x10_count 0 < 5]
+
+  [S017] strategy_s017.py  FAIL  [WR 32.9% <= 62%; PF 0.99 < 2.0; DD 67.0% >= 35%; x10_count 0 < 5]
+
+  [S018] strategy_s018.py  FAIL  [WR 35.0% <= 62%; PF 1.04 < 2.0; DD 41.6% >= 35%; x10_count 0 < 5]
+
+  [S019] strategy_s019.py  FAIL  [WR 33.6% <= 62%; PF 1.04 < 2.0; DD 39.1% >= 35%; x10_count 0 < 5]
+
+  [S020] strategy_s020.py  FAIL  [WR 42.1% <= 62%; PF 0.98 < 2.0; DD 50.4% >= 35%; x10_count 0 < 5]
+
+  [S021] strategy_s021.py  FAIL  [WR 33.0% <= 62%; PF 0.99 < 2.0; DD 66.7% >= 35%; x10_count 0 < 5]
+
+  [S022] strategy_s022.py  FAIL  [WR 33.7% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S023] strategy_s023.py  FAIL  [WR 38.4% <= 62%; PF 1.07 < 2.0; x10_count 0 < 5]
+
+  [S024] strategy_s024.py  FAIL  [WR 33.9% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S025] strategy_s025.py  FAIL  [WR 33.0% <= 62%; PF 0.99 < 2.0; DD 66.7% >= 35%; x10_count 0 < 5]
+
+  [S026] strategy_s026.py  FAIL  [WR 33.9% <= 62%; PF 1.01 < 2.0; x10_count 0 < 5]
+
+  [S027] strategy_s027.py  FAIL  [WR 33.1% <= 62%; PF 0.97 < 2.0; x10_count 0 < 5]
+
+  [S028] strategy_s028.py  FAIL  [WR 39.7% <= 62%; PF 1.09 < 2.0; x10_count 0 < 5]
+
+  [S029] strategy_s029.py  FAIL  [WR 33.7% <= 62%; PF 0.96 < 2.0; DD 65.0% >= 35%; x10_count 0 < 5]
+
+  [S030] strategy_s030.py  FAIL  [WR 34.1% <= 62%; PF 1.04 < 2.0; x10_count 0 < 5]
+
+  [S031] strategy_s031.py  FAIL  [WR 37.8% <= 62%; PF 1.03 < 2.0; DD 47.9% >= 35%; x10_count 0 < 5]
+
+  [S032] strategy_s032.py  FAIL  [WR 33.3% <= 62%; PF 1.02 < 2.0; x10_count 0 < 5]
+
+  [S033] strategy_s033.py  FAIL  [WR 34.0% <= 62%; PF 1.06 < 2.0; x10_count 0 < 5]
+
+  [S034] strategy_s034.py  FAIL  [WR 33.6% <= 62%; PF 1.04 < 2.0; x10_count 0 < 5]
+
+  [S035] strategy_s035.py  FAIL  [WR 36.3% <= 62%; PF 1.01 < 2.0; DD 46.3% >= 35%; x10_count 0 < 5]
+
+  [S036] strategy_s036.py  FAIL  [WR 32.9% <= 62%; PF 0.99 < 2.0; DD 49.4% >= 35%; x10_count 0 < 5]
+
+  [S037] strategy_s037.py  FAIL  [WR 34.0% <= 62%; PF 1.06 < 2.0; x10_count 0 < 5]
+
+  [S038] strategy_s038.py  FAIL  [WR 33.5% <= 62%; PF 0.99 < 2.0; DD 35.1% >= 35%; x10_count 0 < 5]
+
+  [S039] strategy_s039.py  FAIL  [WR 36.0% <= 62%; PF 1.00 < 2.0; DD 55.3% >= 35%; x10_count 0 < 5]
+
+  [S040] strategy_s040.py  FAIL  [WR 33.2% <= 62%; PF 1.02 < 2.0; x10_count 0 < 5]
+
+  [S041] strategy_s041.py  FAIL  [WR 32.8% <= 62%; PF 1.00 < 2.0; DD 67.6% >= 35%; x10_count 0 < 5]
+
+  [S042] strategy_s042.py  FAIL  [WR 33.9% <= 62%; PF 1.05 < 2.0; x10_count 0 < 5]
+
+  [S043] strategy_s043.py  FAIL  [WR 38.2% <= 62%; PF 1.06 < 2.0; x10_count 0 < 5]
+
+  [S044] strategy_s044.py  FAIL  [WR 33.8% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S045] strategy_s045.py  FAIL  [WR 34.9% <= 62%; PF 0.93 < 2.0; DD 126.5% >= 35%; x10_count 0 < 5]
+
+  [S046] strategy_s046.py  FAIL  [WR 33.4% <= 62%; PF 1.00 < 2.0; DD 46.5% >= 35%; x10_count 0 < 5]
+
+  [S047] strategy_s047.py  FAIL  [WR 31.2% <= 62%; PF 1.00 < 2.0; x10_count 0 < 5]
+
+  [S048] strategy_s048.py  FAIL  [WR 29.2% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5]
+
+  [S049] strategy_s049.py  FAIL  [WR 36.6% <= 62%; PF 1.08 < 2.0; x10_count 0 < 5]
+
+  [S050] strategy_s050.py  FAIL  [WR 34.8% <= 62%; PF 1.05 < 2.0; x10_count 0 < 5]
+
+
+Results saved -> C:\Users\hp\XAUUSD-SCALPER-X10\backtests\results\batch1_results.csv
+
+============================================================
+SUMMARY: 0/50 strategies PASSED validation
+============================================================
+
+0 strategies passed. Generating failure report...
+Traceback (most recent call last):
+  File "C:\Users\hp\XAUUSD-SCALPER-X10\backtests\engine.py", line 535, in <module>
+    result = run_batch()
+  File "C:\Users\hp\XAUUSD-SCALPER-X10\backtests\engine.py", line 525, in run_batch
+    print(f"Report saved \u2192 {report_path}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 13: character maps to <undefined>

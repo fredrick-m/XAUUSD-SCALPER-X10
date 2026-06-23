@@ -1,0 +1,66 @@
+XAUUSD-SCALPER-X10  |  Batch Backtest Report
+============================================================
+Date        : 2026-03-28
+Data range  : 2025-12-12 20:56:00 to 2026-03-27 20:57:00
+Total bars  : 100,000
+Strategies  : 50 tested, 0 passed
+
+Validation Criteria
+-------------------
+  Win Rate        > 62%
+  Profit Factor   >= 2.0
+  Max Drawdown    < 35%
+  x10 count       >= 5
+  Total Trades    >= 200
+  Regimes tested  >= 3
+
+Failure Frequency per Criterion
+--------------------------------
+  win_rate            : 50/50 strategies failed (100%)
+  profit_factor       : 50/50 strategies failed (100%)
+  x10_count           : 50/50 strategies failed (100%)
+  max_drawdown        : 22/50 strategies failed (44%)
+  total_trades        : 0/50 strategies failed (0%)
+  regimes_tested      : 0/50 strategies failed (0%)
+
+Most Blocking Criterion: WIN_RATE (failed in 50/50 strategies)
+
+Best Strategy (closest to passing)
+-----------------------------------
+  strategy            : S002
+  total_trades        : 4388
+  win_rate            : 0.3792
+  profit_factor       : 1.0298
+  max_drawdown        : 0.2363
+  x10_count           : 0
+  final_balance       : 1429.21
+  return_pct          : 42.92
+  regimes_tested      : 3
+  passed              : False
+  fail_reasons        : WR 37.9% <= 62%; PF 1.03 < 2.0; x10_count 0 < 5
+  TREND_trades        : 1482
+  TREND_wr            : 0.4224
+  TREND_pf            : 1.3184
+  TREND_dd            : 0.1035
+  RANGE_trades        : 2285
+  RANGE_wr            : 0.337
+  RANGE_pf            : 0.8406
+  RANGE_dd            : 1.2027
+  HIGH_VOLATILITY_trades: 279
+  HIGH_VOLATILITY_wr  : 0.3835
+  HIGH_VOLATILITY_pf  : 0.8444
+  HIGH_VOLATILITY_dd  : 0.3694
+
+Recommendations
+---------------
+1. The most-blocking criterion is: win_rate
+2. Suggested parameter tuning directions:
+   - If WR is low    : tighten TP/SL ratios or add trend confirmation filters
+   - If PF is low    : reduce SL_ATR or increase TP_ATR multiplier
+   - If DD is high   : add maximum daily drawdown guard / position sizing rules
+   - If x10 low      : increase lot size or lengthen test window
+   - If trades < 200 : relax signal conditions or use wider ATR windows
+3. Consider genetic optimization of the best strategy's PARAMS dict.
+4. Consider ensemble / multi-strategy portfolio to combine partial passes.
+
+END OF REPORT

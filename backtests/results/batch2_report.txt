@@ -1,0 +1,71 @@
+XAUUSD-SCALPER-X10  |  Batch Backtest Report
+============================================================
+Date           : 2026-03-28
+Data range     : 2025-12-12 20:56:00 to 2026-03-27 20:57:00
+Total bars     : 100,000
+Strategies     : 50 tested, 0 passed
+Risk% tested   : ['2%', '5%', '10%', '20%']
+Start balance  : $50
+Lot sizing     : Dynamic (balance * risk% / sl_distance / 100.0)
+
+Validation Criteria
+-------------------
+  Win Rate        > 62%
+  Profit Factor   >= 2.0
+  Max Drawdown    < 35%
+  x10 count       >= 5
+  Total Trades    >= 200
+  Regimes tested  >= 3
+
+Failure Frequency per Criterion
+--------------------------------
+  win_rate            : 200/200 combos failed (100%)
+  profit_factor       : 200/200 combos failed (100%)
+  max_drawdown        : 200/200 combos failed (100%)
+  x10_count           : 200/200 combos failed (100%)
+  total_trades        : 0/200 combos failed (0%)
+  regimes_tested      : 0/200 combos failed (0%)
+
+Most Blocking Criterion: WIN_RATE (failed in 200/200 combos)
+
+Best Strategy/Risk combo (closest to passing)
+----------------------------------------------
+  strategy            : S001
+  risk_pct            : 2%
+  total_trades        : 5084
+  win_rate            : 0.3784
+  profit_factor       : 0.9975
+  max_drawdown        : 0.9995
+  x10_count           : 0
+  final_balance       : 35.06
+  return_pct          : -29.89
+  regimes_tested      : 3
+  passed              : False
+  fail_reasons        : WR 37.8% <= 62%; PF 1.00 < 2.0; DD 100.0% >= 35%; x10_count 0 < 5
+  TREND_trades        : 2210
+  TREND_wr            : 0.3747
+  TREND_pf            : 0.9897
+  TREND_dd            : 0.8946
+  RANGE_trades        : 2436
+  RANGE_wr            : 0.3448
+  RANGE_pf            : 0.8865
+  RANGE_dd            : 2.0994
+  HIGH_VOLATILITY_trades: 383
+  HIGH_VOLATILITY_wr  : 0.4386
+  HIGH_VOLATILITY_pf  : 1.2235
+  HIGH_VOLATILITY_dd  : 0.3028
+
+Recommendations
+---------------
+1. Most-blocking criterion: win_rate
+2. Dynamic lot sizing is active — starting balance $50, compounding enabled.
+3. Suggested tuning directions:
+   - If WR is low    : tighten TP/SL ratios or add trend confirmation filters
+   - If PF is low    : reduce SL_ATR or increase TP_ATR multiplier
+   - If DD is high   : lower risk_pct (try 2%) or add intra-day drawdown guard
+   - If x10 low      : use higher risk_pct (10-20%) for aggressive compounding
+   - If trades < 200 : relax signal conditions or use wider ATR windows
+4. Consider genetic optimization of the best strategy's PARAMS dict.
+5. Consider ensemble / multi-strategy portfolio to combine partial passes.
+
+END OF REPORT

@@ -1,0 +1,22 @@
+# Projet annexe — ne fait pas partie de ce repo (contient un fichier 'nul' réservé Windows)
+Nouveau Site Ia/
+
+# Données lourdes (100k barres) — ne pas versionner
+data/raw/
+data/processed/
+*.csv
+
+# Secrets / config locale
+.env
+.env.*
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+Thumbs.db
+.DS_Store

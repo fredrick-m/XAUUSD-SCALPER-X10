@@ -62,6 +62,20 @@ CORE_AGENTS = [
         "config": {"tick_interval": 300},
         "can_spawn_children": False,
     },
+    {
+        "name": "backtest_runner",
+        "module_path": "agents.backtest_runner",
+        "class_name": "BacktestRunner",
+        "config": {"tick_interval": 10},
+        "can_spawn_children": False,
+    },
+    {
+        "name": "strategy_factory",
+        "module_path": "agents.strategy_factory",
+        "class_name": "StrategyFactory",
+        "config": {"tick_interval": 600},
+        "can_spawn_children": False,
+    },
 ]
 
 # ── Backtest defaults ──────────────────────────────

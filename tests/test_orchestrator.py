@@ -43,5 +43,6 @@ def test_orchestrator_start_and_stop(tmp_db):
     t.start()
     time.sleep(2)
     orch.shutdown()
-    t.join(timeout=10)
+    # 5 agents × 3s join timeout each + check_internet() up to 5s = ~20s worst case
+    t.join(timeout=30)
     assert not t.is_alive()

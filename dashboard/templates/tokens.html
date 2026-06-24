@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Token Usage</h2>
+
+<div id="tokens-container"
+     hx-get="/api/tokens"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+  <p id="loading">Loading token usage...</p>
+</div>
+
+<div id="tokens-chart" style="margin-top:16px;min-height:200px;"></div>
+
+<script>
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    const target = evt.detail.target;
+    if (target.id !== "tokens-container") return;
+    try {
+      const d = JSON.parse(evt.detail.xhr.responseText);
+
+      /* Summary card */
+      let html = `
+        <div class="card" style="display:inline-block;min-width:200px;text-align:center;margin-bottom:16px;">
+          <div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px;">Total Cost</div>
+          <div style="color:var(--gold);font-size:28px;font-weight:700;">$${(d.total_cost||0).toFixed(4)}</div>
+        </div>`;
+
+      /* By agent table */
+      if (d.by_agent && d.by_agent.length) {
+        let rows = d.by_agent.map(r => `<tr>
+          <td style="color:var(--cyan);">${r.agent_id}</td>
+          <td>${(r.tokens_in||0).toLocaleString()}</td>
+          <td>${(r.tokens_out||0).toLocaleString()}</td>
+          <td style="color:var(--gold);">$${(r.cost||0).toFixed(4)}</td>
+        </tr>`).join("");
+        html += `
+          <h3 style="margin-top:8px;">By Agent</h3>
+          <table>
+            <thead><tr><th>Agent</th><th>Tokens In</th><th>Tokens Out</th><th>Cost USD</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      }
+
+      /* By model table */
+      if (d.by_model && d.by_model.length) {
+        let rows = d.by_model.map(r => `<tr>
+          <td style="color:var(--green);">${r.model}</td>
+          <td>${(r.tokens_in||0).toLocaleString()}</td>
+          <td>${(r.tokens_out||0).toLocaleString()}</td>
+          <td style="color:var(--gold);">$${(r.cost||0).toFixed(4)}</td>
+        </tr>`).join("");
+        html += `
+          <h3 style="margin-top:16px;">By Model</h3>
+          <table>
+            <thead><tr><th>Model</th><th>Tokens In</th><th>Tokens Out</th><th>Cost USD</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+
+        /* Plotly bar chart */
+        if (typeof Plotly !== "undefined") {
+          const chartEl = document.getElementById("tokens-chart");
+          Plotly.newPlot(chartEl, [{
+            type: "bar",
+            x: d.by_model.map(r => r.model),
+            y: d.by_model.map(r => r.cost || 0),
+            marker: { color: "#ffd700" },
+          }], {
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+            font: { family: "monospace", color: "#555577", size: 11 },
+            margin: { l: 60, r: 20, t: 20, b: 60 },
+            xaxis: { color: "#555577" },
+            yaxis: { title: "Cost USD", color: "#555577", gridcolor: "#55557722" },
+          }, { displayModeBar: false });
+        }
+      }
+
+      target.innerHTML = html;
+    } catch(e) {}
+  });
+</script>
+{% endblock %}

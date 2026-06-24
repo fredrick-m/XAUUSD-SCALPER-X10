@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Strategies</h2>
+
+<div id="strategies-container"
+     hx-get="/api/strategies"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+  <p id="loading">Loading strategies...</p>
+</div>
+
+<script>
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    const target = evt.detail.target;
+    if (target.id !== "strategies-container") return;
+    try {
+      const strategies = JSON.parse(evt.detail.xhr.responseText);
+      if (!strategies.length) {
+        target.innerHTML = '<p style="color:var(--muted);font-size:12px;">No strategies found.</p>';
+        return;
+      }
+      let rows = strategies.map(s => {
+        const pf = s.best_profit_factor != null ? s.best_profit_factor.toFixed(2) : "-";
+        const wr = s.best_win_rate != null ? (s.best_win_rate * 100).toFixed(1) + "%" : "-";
+        const dd = s.best_max_drawdown != null ? (s.best_max_drawdown * 100).toFixed(1) + "%" : "-";
+        const pfColor = (s.best_profit_factor >= 2.0) ? "var(--green)" : (s.best_profit_factor >= 1.0) ? "var(--gold)" : "var(--red)";
+        return `<tr>
+          <td style="color:var(--cyan);">${s.id}</td>
+          <td>${s.family || "-"}</td>
+          <td class="tag-${s.status}">${s.status}</td>
+          <td>${s.generation || 1}</td>
+          <td style="color:${pfColor};">${pf}</td>
+          <td>${wr}</td>
+          <td style="color:var(--red);">${dd}</td>
+          <td style="color:var(--gold);">${s.best_x10_count || 0}</td>
+          <td style="color:var(--muted);font-size:10px;">${s.created_at || "-"}</td>
+        </tr>`;
+      }).join("");
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th><th>Family</th><th>Status</th><th>Gen</th>
+              <th>Best PF</th><th>Win Rate</th><th>Max DD</th><th>x10</th><th>Created</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    } catch(e) {}
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>System Overview</h2>
+
+<div id="summary-container"
+     hx-get="/api/summary"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <p id="loading">Loading...</p>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Agents</h3>
+  <div id="agents-container"
+       hx-get="/api/agents"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <p id="loading">Loading agents...</p>
+  </div>
+</div>
+
+<script>
+  /* Render summary KPI cards after htmx loads /api/summary JSON */
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    const target = evt.detail.target;
+
+    if (target.id === "summary-container") {
+      try {
+        const d = JSON.parse(evt.detail.xhr.responseText);
+        target.innerHTML = `
+          <div style="display:flex;gap:16px;flex-wrap:wrap;">
+            ${kpiBox("Agents Running", d.agents_running, "var(--green)")}
+            ${kpiBox("Agents Total", d.agents_total, "var(--cyan)")}
+            ${kpiBox("Strategies", d.total_strategies, "var(--gold)")}
+            ${kpiBox("Validated", d.validated_strategies, "var(--cyan)")}
+            ${kpiBox("Total Cost USD", "$" + (d.total_cost_usd || 0).toFixed(4), "var(--muted)")}
+            ${kpiBox("Pending Tasks", d.pending_tasks, "var(--gold)")}
+          </div>
+          ${d.best_strategy ? `<p style="margin-top:12px;font-size:11px;color:var(--muted);">
+            Best strategy: <span style="color:var(--gold);">${d.best_strategy.id}</span>
+            — PF <span style="color:var(--green);">${(d.best_strategy.best_profit_factor||0).toFixed(2)}</span>
+          </p>` : ""}
+        `;
+      } catch(e) {}
+    }
+
+    if (target.id === "agents-container") {
+      try {
+        const agents = JSON.parse(evt.detail.xhr.responseText);
+        if (!agents.length) { target.innerHTML = '<p style="color:var(--muted);font-size:12px;">No agents registered.</p>'; return; }
+        let rows = agents.map(a => `
+          <tr>
+            <td>${a.id}</td>
+            <td>${a.name}</td>
+            <td class="tag-${a.status}">${a.status}</td>
+            <td>${a.error_count ?? 0}</td>
+            <td>${a.restart_count ?? 0}</td>
+            <td style="color:var(--muted);">${a.last_heartbeat || "-"}</td>
+          </tr>`).join("");
+        target.innerHTML = `
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Errors</th><th>Restarts</th><th>Last Heartbeat</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      } catch(e) {}
+    }
+  });
+
+  function kpiBox(label, value, color) {
+    return `<div class="card" style="min-width:140px;text-align:center;">
+      <div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px;">${label}</div>
+      <div style="color:${color};font-size:22px;font-weight:700;">${value}</div>
+    </div>`;
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUUSD-SCALPER-X10</title>
+
+  <!-- htmx -->
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <!-- Plotly -->
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" defer></script>
+
+  <style>
+    :root {
+      --bg:    #0a0a0f;
+      --card:  #10101a;
+      --green: #00ff9f;
+      --gold:  #ffd700;
+      --red:   #ff4060;
+      --cyan:  #00d4ff;
+      --muted: #555577;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: #eeeeee;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+      min-height: 100vh;
+    }
+
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 12px 24px;
+      border-bottom: 1px solid #55557733;
+      background: var(--card);
+    }
+
+    nav .brand {
+      color: var(--gold);
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: 1px;
+      text-decoration: none;
+    }
+
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    nav a:hover, nav a.active {
+      color: var(--cyan);
+      background: #00d4ff11;
+    }
+
+    main {
+      padding: 24px;
+    }
+
+    h1, h2, h3 {
+      color: var(--gold);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid #55557733;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 1px;
+      padding: 6px 8px;
+      border-bottom: 1px solid #55557744;
+      text-align: left;
+    }
+
+    td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #55557722;
+      color: #cccccc;
+    }
+
+    tr:hover td { background: #ffffff08; }
+
+    .tag-running  { color: var(--green); }
+    .tag-stopped  { color: var(--muted); }
+    .tag-error    { color: var(--red); }
+    .tag-validated{ color: var(--cyan); }
+
+    #loading { color: var(--muted); font-size: 12px; padding: 8px 0; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/" class="brand">XAUUSD-SCALPER-X10</a>
+    <a href="/">Overview</a>
+    <a href="/strategies">Strategies</a>
+    <a href="/tokens">Tokens</a>
+    <a href="/events">Events</a>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

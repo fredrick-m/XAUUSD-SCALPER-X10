@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Event Log</h2>
+
+<div id="events-container"
+     hx-get="/api/events"
+     hx-trigger="load, every 3s"
+     hx-swap="innerHTML">
+  <p id="loading">Loading events...</p>
+</div>
+
+<script>
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    const target = evt.detail.target;
+    if (target.id !== "events-container") return;
+    try {
+      const events = JSON.parse(evt.detail.xhr.responseText);
+      if (!events.length) {
+        target.innerHTML = '<p style="color:var(--muted);font-size:12px;">No events recorded.</p>';
+        return;
+      }
+
+      const typeColor = {
+        INFO: "var(--cyan)",
+        WARN: "var(--gold)",
+        WARNING: "var(--gold)",
+        ERROR: "var(--red)",
+        DEBUG: "var(--muted)",
+      };
+
+      let rows = events.map(e => {
+        const color = typeColor[e.event_type] || "var(--cyan)";
+        return `<tr>
+          <td style="color:var(--muted);font-size:10px;white-space:nowrap;">${e.timestamp || "-"}</td>
+          <td style="color:${color};font-size:11px;">${e.event_type}</td>
+          <td style="color:var(--cyan);font-size:11px;">${e.agent_id || "-"}</td>
+          <td style="font-size:11px;">${e.event_message || ""}</td>
+        </tr>`;
+      }).join("");
+
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Timestamp</th><th>Type</th><th>Agent</th><th>Message</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    } catch(e) {}
+  });
+</script>
+{% endblock %}

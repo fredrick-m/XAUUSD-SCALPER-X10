@@ -28,13 +28,15 @@ def test_strategies_dir_exists():
 def test_core_agents_list():
     from core.config import CORE_AGENTS
     assert isinstance(CORE_AGENTS, list)
-    assert len(CORE_AGENTS) >= 5
+    assert len(CORE_AGENTS) >= 7
     names = [a["name"] for a in CORE_AGENTS]
     assert "token_manager" in names
     assert "model_router" in names
     assert "data_agent" in names
     assert "backtest_runner" in names
     assert "strategy_factory" in names
+    assert "evolution_agent" in names
+    assert "plugin_scout" in names
 
 
 def test_model_constants():

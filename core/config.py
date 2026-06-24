@@ -76,6 +76,20 @@ CORE_AGENTS = [
         "config": {"tick_interval": 600},
         "can_spawn_children": False,
     },
+    {
+        "name": "evolution_agent",
+        "module_path": "agents.evolution_agent",
+        "class_name": "EvolutionAgent",
+        "config": {"tick_interval": 120},
+        "can_spawn_children": False,
+    },
+    {
+        "name": "plugin_scout",
+        "module_path": "agents.plugin_scout",
+        "class_name": "PluginScout",
+        "config": {"tick_interval": 3600},
+        "can_spawn_children": False,
+    },
 ]
 
 # ── Backtest defaults ──────────────────────────────

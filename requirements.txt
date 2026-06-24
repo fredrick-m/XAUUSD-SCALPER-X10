@@ -1,0 +1,10 @@
+anthropic>=0.40.0
+MetaTrader5>=5.0.45
+pandas>=2.0
+numpy>=1.24
+ta>=0.11.0
+optuna>=3.6
+flask>=3.0
+plotly>=5.18
+requests>=2.31
+pytest>=8.0

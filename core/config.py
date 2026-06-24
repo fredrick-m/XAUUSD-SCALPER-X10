@@ -38,6 +38,7 @@ INTERNET_CHECK_INTERVAL = 30
 
 # ── Agent defaults ─────────────────────────────────
 DEFAULT_TICK_INTERVAL = 60
+DASHBOARD_PORT = 8050
 
 # ── Core agents to register at startup ─────────────
 CORE_AGENTS = [

@@ -91,6 +91,20 @@ CORE_AGENTS = [
         "config": {"tick_interval": 3600},
         "can_spawn_children": False,
     },
+    {
+        "name": "ui_director",
+        "module_path": "agents.ui_director",
+        "class_name": "UIDirector",
+        "config": {"tick_interval": 30},
+        "can_spawn_children": False,
+    },
+    {
+        "name": "meta_agent",
+        "module_path": "agents.meta_agent",
+        "class_name": "MetaAgent",
+        "config": {"tick_interval": 300},
+        "can_spawn_children": True,
+    },
 ]
 
 # ── Backtest defaults ──────────────────────────────

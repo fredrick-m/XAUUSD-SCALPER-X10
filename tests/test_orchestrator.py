@@ -31,6 +31,8 @@ def test_register_core_agents(tmp_db):
     assert "strategy_factory" in names
     assert "evolution_agent" in names
     assert "plugin_scout" in names
+    assert "ui_director" in names
+    assert "meta_agent" in names
 
 
 def test_check_internet():
@@ -47,6 +49,6 @@ def test_orchestrator_start_and_stop(tmp_db):
     t.start()
     time.sleep(2)
     orch.shutdown()
-    # 7 agents × 3s join timeout each + check_internet() up to 5s = ~26s worst case
-    t.join(timeout=45)
+    # 9 agents × 3s join timeout each + check_internet() up to 5s = ~32s worst case
+    t.join(timeout=60)
     assert not t.is_alive()

@@ -1,8 +1,12 @@
-"""Anthropic API client with automatic token usage tracking."""
-import os
-from typing import Optional
+"""Anthropic API client with automatic token usage tracking.
 
-import anthropic
+Dual mode:
+  - If ANTHROPIC_API_KEY is set → direct API call (original behavior)
+  - If no key → queue request in llm_queue table, poll for Claude Code to process it
+"""
+import os
+import time
+from typing import Optional
 
 from core.config import MODELS, MODEL_COSTS
 
@@ -24,8 +28,17 @@ def record_usage(db, agent_id: str, model: str, tokens_in: int, tokens_out: int,
     )
 
 
+def has_api_key() -> bool:
+    """Check if an Anthropic API key is configured."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
 class APIClient:
-    """Wrapper around the Anthropic SDK that tracks token usage per call."""
+    """Wrapper around the Anthropic SDK that tracks token usage per call.
+
+    When no API key is available, requests are queued in the llm_queue table
+    and the call blocks until Claude Code processes the request.
+    """
 
     def __init__(self, db, agent_id: str):
         self.db = db
@@ -33,14 +46,24 @@ class APIClient:
         self._client = None
 
     @property
-    def client(self) -> anthropic.Anthropic:
+    def client(self):
         if self._client is None:
+            import anthropic
             self._client = anthropic.Anthropic()
         return self._client
 
     def call(self, prompt: str, model_key: str = "sonnet", system: str = "",
              max_tokens: int = 4096, task_type: str = "general", temperature: float = 0.7) -> str:
         """Call Claude and record token usage. Returns the text response."""
+        if has_api_key():
+            return self._call_api(prompt, model_key, system, max_tokens, task_type, temperature)
+        return self._call_via_queue(prompt, model_key, system, max_tokens, task_type, temperature)
+
+    # ── Direct API path ───────────────────────────────────────────────────────
+
+    def _call_api(self, prompt: str, model_key: str, system: str,
+                  max_tokens: int, task_type: str, temperature: float) -> str:
+        """Direct Anthropic API call."""
         model_id = MODELS.get(model_key, model_key)
 
         messages = [{"role": "user", "content": prompt}]
@@ -68,3 +91,34 @@ class APIClient:
             )
 
         return response.content[0].text
+
+    # ── Queue path (no API key) ───────────────────────────────────────────────
+
+    def _call_via_queue(self, prompt: str, model_key: str, system: str,
+                        max_tokens: int, task_type: str, temperature: float) -> str:
+        """Queue the request and poll until Claude Code processes it."""
+        model_id = MODELS.get(model_key, model_key)
+
+        cursor = self.db.execute(
+            "INSERT INTO llm_queue (agent_id, prompt, system_prompt, model, task_type, max_tokens, temperature) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (self.agent_id, prompt, system, model_id, task_type, max_tokens, temperature),
+        )
+        request_id = cursor.lastrowid
+
+        from core.logger import get_logger
+        logger = get_logger(self.agent_id)
+        logger.info(f"LLM request #{request_id} queued ({task_type}) — waiting for Claude Code...")
+
+        # Poll for response (10 min timeout)
+        deadline = time.time() + 600
+        while time.time() < deadline:
+            row = self.db.fetchone(
+                "SELECT response FROM llm_queue WHERE id = ? AND status = 'completed'",
+                (request_id,),
+            )
+            if row and row["response"]:
+                return row["response"]
+            time.sleep(2)
+
+        raise TimeoutError(f"LLM request #{request_id} timed out — no Claude Code session processing the queue")

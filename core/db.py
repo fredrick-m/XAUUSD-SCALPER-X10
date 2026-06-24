@@ -178,4 +178,19 @@ CREATE TABLE IF NOT EXISTS plugins (
     description TEXT,
     used_by JSON DEFAULT '[]'
 );
+
+CREATE TABLE IF NOT EXISTS llm_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    system_prompt TEXT DEFAULT '',
+    model TEXT DEFAULT 'sonnet',
+    task_type TEXT DEFAULT 'general',
+    max_tokens INTEGER DEFAULT 4096,
+    temperature REAL DEFAULT 0.7,
+    status TEXT DEFAULT 'pending',
+    response TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
 """

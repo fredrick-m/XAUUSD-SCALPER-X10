@@ -41,6 +41,7 @@ class UIDirector(BaseAgent):
                     "port": DASHBOARD_PORT,
                     "debug": False,
                     "use_reloader": False,
+                    "threaded": True,
                 },
                 daemon=True,
             )

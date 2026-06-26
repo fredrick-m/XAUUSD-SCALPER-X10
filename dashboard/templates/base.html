@@ -1,130 +1,504 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>XAUUSD-SCALPER-X10</title>
-
-  <!-- htmx -->
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CLAUDE × SCALPER</title>
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
-  <!-- Plotly -->
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" defer></script>
-
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap');
     :root {
-      --bg:    #0a0a0f;
-      --card:  #10101a;
-      --green: #00ff9f;
-      --gold:  #ffd700;
-      --red:   #ff4060;
-      --cyan:  #00d4ff;
-      --muted: #555577;
+      --bg: #f0ece4;
+      --bg2: #e8e3d9;
+      --bg3: #ddd8ce;
+      --card: #faf8f4;
+      --card-alt: #f5f1ea;
+      --border: #ccc7ba;
+      --border-light: #ddd9d0;
+      --text: #1a1a18;
+      --text2: #4a4a44;
+      --text3: #8a8a80;
+      --gold: #c8a000;
+      --gold-bright: #e6b800;
+      --gold-dim: #9a7b00;
+      --green: #1a8a40;
+      --green-bright: #22b854;
+      --green-bg: #e0f2e6;
+      --red: #c0392b;
+      --red-bright: #e74c3c;
+      --red-bg: #fde8e6;
+      --blue: #2471a3;
+      --blue-bg: #e8f0fa;
+      --purple: #7d3c98;
+      --teal: #0e8a7d;
+      --amber: #d4a017;
+      --amber-bg: #fef9e7;
     }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       background: var(--bg);
-      color: #eeeeee;
-      font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
-      min-height: 100vh;
+      color: var(--text);
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.4;
     }
 
+    /* ── HEADER ─────────────────────────────────── */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--card);
+      border-bottom: 2px solid var(--border);
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header .logo {
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 800; font-size: 14px; color: var(--text);
+      text-decoration: none; letter-spacing: -0.5px;
+    }
+    .header .logo .icon {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--text); color: var(--card);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800;
+    }
+    .header .logo .x { color: var(--gold); }
+    .badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 3px 10px; border-radius: 3px; text-transform: uppercase;
+    }
+    .badge-live {
+      background: var(--green); color: #fff;
+      animation: livePulse 2s ease-in-out infinite;
+    }
+    @keyframes livePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    .badge-agents { background: var(--blue-bg); color: var(--blue); }
+    .header-right {
+      display: flex; align-items: center; gap: 16px;
+      color: var(--text3); font-size: 10px;
+    }
+    .header-right .utc {
+      font-weight: 700; font-size: 14px; color: var(--text);
+      letter-spacing: 1px;
+    }
+
+    /* ── TICKER ──────────────────────────────────── */
+    .ticker {
+      display: flex; align-items: center; gap: 4px;
+      padding: 5px 16px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border-light);
+      font-size: 10px; color: var(--text2);
+      overflow: hidden;
+    }
+    .ticker .sep { color: var(--border); margin: 0 4px; }
+    .ticker .val { font-weight: 700; }
+    .ticker .val-g { font-weight: 700; color: var(--green); }
+    .ticker .val-r { font-weight: 700; color: var(--red); }
+    .ticker .val-b { font-weight: 700; color: var(--gold-dim); }
+
+    /* ── NAV ─────────────────────────────────────── */
     nav {
-      display: flex;
-      align-items: center;
-      gap: 24px;
-      padding: 12px 24px;
-      border-bottom: 1px solid #55557733;
-      background: var(--card);
+      display: flex; gap: 0; background: var(--card);
+      border-bottom: 1px solid var(--border);
     }
-
-    nav .brand {
-      color: var(--gold);
-      font-weight: 700;
-      font-size: 16px;
-      letter-spacing: 1px;
-      text-decoration: none;
-    }
-
     nav a {
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      padding: 4px 10px;
-      border-radius: 4px;
-      transition: color 0.15s, background 0.15s;
+      padding: 8px 18px; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--text3); text-decoration: none;
+      border-bottom: 2px solid transparent;
+      font-weight: 600;
+      transition: all 0.15s;
     }
-
     nav a:hover, nav a.active {
-      color: var(--cyan);
-      background: #00d4ff11;
+      color: var(--text); border-bottom-color: var(--gold);
     }
 
-    main {
-      padding: 24px;
+    /* ── MAIN GRID ───────────────────────────────── */
+    main { padding: 8px; }
+    .grid-main {
+      display: grid;
+      grid-template-columns: 1.3fr 0.8fr 0.9fr;
+      gap: 6px;
     }
-
-    h1, h2, h3 {
-      color: var(--gold);
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 2px;
-      margin-bottom: 16px;
+    .grid-2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
     }
+    .grid-3 {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;
+    }
+    .span-2 { grid-column: span 2; }
+    .span-3 { grid-column: span 3; }
 
-    .card {
+    /* ── SECTION CARD ────────────────────────────── */
+    .section {
       background: var(--card);
-      border: 1px solid #55557733;
-      border-radius: 8px;
-      padding: 16px;
-      margin-bottom: 16px;
+      border: 1px solid var(--border-light);
+      border-radius: 3px;
+      padding: 10px 12px;
+      position: relative;
+    }
+    .section-title {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--text3);
+      margin-bottom: 8px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-title::before {
+      content: '◆'; color: var(--gold); font-size: 9px;
+    }
+    .section-title .right {
+      margin-left: auto; font-weight: 500; color: var(--text3);
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
+    /* ── HERO P&L (golden glow) ──────────────────── */
+    .hero-value {
+      font-size: 42px; font-weight: 800; color: var(--green);
+      line-height: 1; margin: 4px 0;
+      text-shadow: 0 0 20px rgba(26,138,64,0.15);
+    }
+    .hero-value.gold {
+      color: var(--gold);
+      text-shadow: 0 0 30px rgba(200,160,0,0.2), 0 0 60px rgba(200,160,0,0.08);
+    }
+    .hero-sub { font-size: 9px; color: var(--text3); letter-spacing: 0.5px; text-transform: uppercase; }
+
+    /* ── MULTIPLIER BOX (golden) ─────────────────── */
+    .mult-box {
+      background: linear-gradient(135deg, #fef9e7 0%, #fdf2d0 100%);
+      border: 2px solid var(--gold);
+      border-radius: 4px;
+      padding: 12px;
+      text-align: center;
+      position: relative;
+      box-shadow: 0 0 20px rgba(200,160,0,0.1), inset 0 0 20px rgba(200,160,0,0.05);
+    }
+    .mult-value {
+      font-size: 38px; font-weight: 800; color: var(--gold-dim);
+      line-height: 1;
+      text-shadow: 0 0 15px rgba(200,160,0,0.2);
+    }
+    .mult-sub { font-size: 9px; color: var(--gold-dim); margin-top: 4px; font-weight: 600; }
+    .mult-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr;
+      gap: 4px; margin-top: 8px; font-size: 9px;
+    }
+    .mult-grid .mg-label { color: var(--text3); text-transform: uppercase; font-size: 8px; }
+    .mult-grid .mg-val { font-weight: 700; color: var(--text); }
+
+    /* ── STAT ROWS ───────────────────────────────── */
+    .stat-row {
+      display: flex; gap: 16px; margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .stat-item { display: flex; flex-direction: column; }
+    .stat-label {
+      font-size: 7px; text-transform: uppercase;
+      letter-spacing: 1.2px; color: var(--text3); font-weight: 600;
+    }
+    .stat-value { font-size: 14px; font-weight: 700; }
+    .stat-value.green { color: var(--green); }
+    .stat-value.red { color: var(--red); }
+    .stat-value.gold { color: var(--gold); }
+    .stat-value.blue { color: var(--blue); }
+
+    .risk-badge {
+      display: inline-block; padding: 3px 12px; border-radius: 3px;
+      font-size: 9px; font-weight: 800; letter-spacing: 1px;
+    }
+    .risk-safe { background: var(--green-bg); color: var(--green); }
+    .risk-warn { background: var(--amber-bg); color: var(--amber); }
+    .risk-danger { background: var(--red-bg); color: var(--red); }
+
+    /* ── PIPELINE ─────────────────────────────────── */
+    .pipeline {
+      display: flex; align-items: center; gap: 0;
+      margin: 4px 0;
+    }
+    .pipe-stage {
+      flex: 1; text-align: center; padding: 5px 4px;
+      font-size: 7px; text-transform: uppercase; letter-spacing: 0.5px;
+      border: 1px solid var(--border-light);
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+    .pipe-stage:first-child { border-radius: 3px 0 0 3px; }
+    .pipe-stage:last-child { border-radius: 0 3px 3px 0; }
+    .pipe-stage .pipe-count {
+      display: block; font-size: 12px; font-weight: 800;
+      color: var(--text);
+    }
+    .pipe-stage.active {
+      background: var(--teal); color: #fff;
+      border-color: var(--teal);
+    }
+    .pipe-stage.active .pipe-count { color: #fff; }
+    .pipe-stage.done {
+      background: var(--green-bg); border-color: var(--green);
+    }
+    .pipe-stage.done .pipe-count { color: var(--green); }
+
+    /* ── DECISION TREE (SVG) ─────────────────────── */
+    .tree-container {
+      width: 100%; height: 200px; position: relative;
+      overflow: hidden;
+    }
+    .tree-container svg { width: 100%; height: 100%; }
+    .tree-node rect {
+      fill: var(--card); stroke: var(--border); stroke-width: 1;
+      rx: 4; ry: 4;
+    }
+    .tree-node.highlight rect {
+      fill: #fef9e7; stroke: var(--gold); stroke-width: 2;
+    }
+    .tree-node.success rect {
+      fill: var(--green-bg); stroke: var(--green); stroke-width: 2;
+    }
+    .tree-node.glow rect {
+      fill: linear-gradient(135deg, #fef9e7, #fdf2d0);
+      stroke: var(--gold); stroke-width: 2;
+      filter: drop-shadow(0 0 8px rgba(200,160,0,0.3));
+    }
+    .tree-node text {
+      font-family: 'JetBrains Mono', monospace; font-size: 8px;
+      fill: var(--text2); text-anchor: middle;
+    }
+    .tree-node .node-val {
+      font-size: 11px; font-weight: 700; fill: var(--text);
+    }
+    .tree-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .tree-edge.active { stroke: var(--green); stroke-width: 2; }
+
+    /* ── ROBUSTNESS HEATMAP ──────────────────────── */
+    .heatmap-grid {
+      display: grid; grid-template-columns: 55px repeat(6, 1fr);
+      gap: 2px; font-size: 9px;
+    }
+    .hm-header { font-weight: 700; color: var(--text3); text-align: center; padding: 3px; font-size: 8px; }
+    .hm-label { color: var(--text2); padding: 3px; font-weight: 600; }
+    .hm-cell {
+      text-align: center; padding: 3px; border-radius: 2px;
+      font-weight: 700; font-size: 9px;
+    }
+    .hm-green { background: #c8e6c9; color: #1b5e20; }
+    .hm-yellow { background: #fff9c4; color: #827717; }
+    .hm-red { background: #ffcdd2; color: #b71c1c; }
+    .hm-gray { background: var(--bg2); color: var(--text3); }
+
+    /* ── GAUGE ────────────────────────────────────── */
+    .gauge-wrap {
+      display: flex; align-items: center; gap: 12px;
+      margin-top: 8px;
+    }
+    .gauge-circle {
+      width: 52px; height: 52px; border-radius: 50%;
+      border: 4px solid var(--border-light);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 800;
+    }
+    .gauge-circle.good { border-color: var(--green); color: var(--green); }
+    .gauge-circle.warn { border-color: var(--amber); color: var(--amber); }
+    .gauge-circle.bad { border-color: var(--red); color: var(--red); }
+
+    /* ── MONTE CARLO ─────────────────────────────── */
+    .mc-stats {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+      font-size: 10px; margin-top: 6px;
+    }
+    .mc-stats .mc-label { color: var(--text3); font-size: 8px; font-weight: 600; text-transform: uppercase; }
+    .mc-stats .mc-val { font-weight: 700; text-align: right; }
+
+    /* ── EQUITY CURVE ────────────────────────────── */
+    .chart-container {
+      width: 100%; height: 120px; position: relative;
     }
 
+    /* ── LIVE FEED ───────────────────────────────── */
+    .feed-list { max-height: 260px; overflow-y: auto; }
+    .feed-item {
+      display: flex; gap: 6px; padding: 3px 0;
+      border-bottom: 1px solid var(--border-light);
+      font-size: 10px; align-items: center;
+    }
+    .feed-new {
+      animation: feedFlash 2s ease-out;
+    }
+    @keyframes feedFlash {
+      0% { background: rgba(26,138,64,0.25); }
+      100% { background: transparent; }
+    }
+    .feed-time { color: var(--text3); white-space: nowrap; min-width: 48px; font-size: 9px; }
+    .feed-agent { color: var(--blue); min-width: 70px; font-weight: 600; font-size: 9px; }
+    .feed-msg { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+    .feed-type {
+      font-size: 7px; font-weight: 700; padding: 1px 4px;
+      border-radius: 2px; text-transform: uppercase; min-width: 48px; text-align: center;
+    }
+    .ft-milestone { background: var(--green-bg); color: var(--green); }
+    .ft-warning { background: var(--amber-bg); color: var(--amber); }
+    .ft-error { background: var(--red-bg); color: var(--red); }
+    .ft-info { background: var(--blue-bg); color: var(--blue); }
+    .ft-trade { background: #e8f5e9; color: #1b5e20; }
+
+    /* ── TABLE COMPACT ───────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
     th {
-      color: var(--muted);
-      text-transform: uppercase;
-      font-size: 10px;
-      letter-spacing: 1px;
-      padding: 6px 8px;
-      border-bottom: 1px solid #55557744;
-      text-align: left;
+      color: var(--text3); text-transform: uppercase; font-size: 7px;
+      letter-spacing: 1px; padding: 4px 5px;
+      border-bottom: 2px solid var(--border);
+      text-align: left; font-weight: 700;
     }
-
     td {
-      padding: 6px 8px;
-      border-bottom: 1px solid #55557722;
-      color: #cccccc;
+      padding: 3px 5px; border-bottom: 1px solid var(--border-light);
+      color: var(--text2); font-size: 9px;
+    }
+    tr:hover td { background: var(--bg2); }
+    .t-green { color: var(--green); font-weight: 700; }
+    .t-red { color: var(--red); font-weight: 700; }
+    .t-gold { color: var(--gold); font-weight: 700; }
+    .t-blue { color: var(--blue); font-weight: 700; }
+
+    /* ── AGENT STATUS DOTS ───────────────────────── */
+    .agent-dots {
+      display: flex; flex-wrap: wrap; gap: 5px;
+    }
+    .agent-dot {
+      display: flex; align-items: center; gap: 3px;
+      font-size: 8px; color: var(--text2); font-weight: 500;
+    }
+    .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .dot-green { background: var(--green); box-shadow: 0 0 4px rgba(26,138,64,0.4); }
+    .dot-red { background: var(--red); }
+    .dot-gray { background: var(--text3); }
+
+    /* ── LIVE TRADE HIGHLIGHT ────────────────────── */
+    .trade-row-profit td { background: rgba(26,138,64,0.04); }
+    .trade-row-loss td { background: rgba(192,57,43,0.04); }
+    .pnl-glow {
+      text-shadow: 0 0 8px rgba(26,138,64,0.3);
     }
 
-    tr:hover td { background: #ffffff08; }
+    /* ── BOTTOM BAR ──────────────────────────────── */
+    .bottom-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 16px;
+      background: var(--card);
+      border-top: 2px solid var(--border);
+      font-size: 8px; color: var(--text3);
+      letter-spacing: 0.5px; font-weight: 600;
+    }
 
-    .tag-running  { color: var(--green); }
-    .tag-stopped  { color: var(--muted); }
-    .tag-error    { color: var(--red); }
-    .tag-validated{ color: var(--cyan); }
+    /* ── Scrollbar ────────────────────────────────── */
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: var(--bg2); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-    #loading { color: var(--muted); font-size: 12px; padding: 8px 0; }
+    @media (max-width: 900px) {
+      .grid-main, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .span-2, .span-3 { grid-column: span 1; }
+    }
   </style>
 </head>
 <body>
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-left">
+      <a href="/" class="logo">
+        <span class="icon">Q</span>
+        CLAUDE <span class="x">&times;</span> SCALPER
+      </a>
+      <span style="color:var(--text3);font-size:9px;letter-spacing:1px;">XAUUSD AUTONOMOUS SYSTEM</span>
+      <span class="badge badge-live" id="hdr-live">&#9679; LIVE</span>
+      <span class="badge badge-agents" id="hdr-agents">22/22 AGENTS</span>
+    </div>
+    <div class="header-right">
+      <span style="font-size:9px;">ROUND <strong id="hdr-round">0</strong></span>
+      <span class="utc" id="hdr-utc">--:--:-- UTC</span>
+    </div>
+  </div>
+
+  <!-- TICKER BAR -->
+  <div class="ticker" id="ticker-bar">
+    Loading system stats...
+  </div>
+
+  <!-- NAV -->
   <nav>
-    <a href="/" class="brand">XAUUSD-SCALPER-X10</a>
-    <a href="/">Overview</a>
+    <a href="/" class="active">Overview</a>
     <a href="/strategies">Strategies</a>
     <a href="/tokens">Tokens</a>
     <a href="/events">Events</a>
   </nav>
+
   <main>
     {% block content %}{% endblock %}
   </main>
+
+  <!-- BOTTOM BAR -->
+  <div class="bottom-bar">
+    <span>&#9670; AGENT SCALPER | MODEL: CLAUDE OPUS 4.6 | AUTONOMOUS 24/7</span>
+    <span>ENGINE: BACKTEST v2 | EMA-STACK + OR-LOGIC | M5 TIMEFRAME</span>
+    <span>LATENCY: <span id="bb-latency">--</span>ms | <span id="bb-time"></span></span>
+  </div>
+
+  <script>
+    // UTC Clock
+    function updateClock() {
+      const now = new Date();
+      const h = String(now.getUTCHours()).padStart(2,'0');
+      const m = String(now.getUTCMinutes()).padStart(2,'0');
+      const s = String(now.getUTCSeconds()).padStart(2,'0');
+      document.getElementById('hdr-utc').textContent = h+':'+m+':'+s+' UTC';
+      const el = document.getElementById('bb-time');
+      if (el) el.textContent = h+':'+m+':'+s;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Measure latency
+    async function measureLatency() {
+      const t0 = performance.now();
+      await fetch('/api/summary');
+      const ms = Math.round(performance.now() - t0);
+      const el = document.getElementById('bb-latency');
+      if (el) el.textContent = ms;
+    }
+    setInterval(measureLatency, 10000);
+
+    // Update header & ticker
+    async function updateHeader() {
+      try {
+        const r = await fetch('/api/summary');
+        const d = await r.json();
+        document.getElementById('hdr-agents').textContent = d.agents_running + '/' + d.agents_total + ' AGENTS';
+        document.getElementById('hdr-round').textContent = d.backtest_runs;
+
+        document.getElementById('ticker-bar').innerHTML =
+          `<span class="val-b">&#9670; SCALPER</span>`+
+          `<span class="sep">|</span>`+
+          `<span>VALIDATED: <span class="val-g">${d.validated}</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>PROD PF: <span class="val-g">${d.prod_avg_pf.toFixed(2)}</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>PROD WR: <span class="val">${(d.prod_avg_wr*100).toFixed(1)}%</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>EXPLORED: <span class="val">${d.total_strategies}</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>BACKTESTS: <span class="val">${d.backtest_runs}</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>BEST PF: <span class="val-g">${d.max_pf.toFixed(2)}</span></span>`+
+          `<span class="sep">|</span>`+
+          `<span>COST: <span class="val">$${d.total_cost_usd.toFixed(2)}</span></span>`;
+      } catch(e) {}
+    }
+    setInterval(updateHeader, 5000);
+    updateHeader();
+    measureLatency();
+  </script>
 </body>
 </html>

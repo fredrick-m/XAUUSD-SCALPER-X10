@@ -52,9 +52,28 @@ class APIClient:
             self._client = anthropic.Anthropic()
         return self._client
 
+    # Daily API budget in USD — prevents runaway costs in 24/7 mode
+    DAILY_BUDGET_USD = 5.0
+
+    def _check_budget(self) -> bool:
+        """Return True if daily budget is not yet exceeded."""
+        if self.db is None:
+            return True
+        row = self.db.fetchone(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM token_usage "
+            "WHERE timestamp >= datetime('now', '-1 day')"
+        )
+        spent = float(row["c"]) if row else 0.0
+        return spent < self.DAILY_BUDGET_USD
+
     def call(self, prompt: str, model_key: str = "sonnet", system: str = "",
              max_tokens: int = 4096, task_type: str = "general", temperature: float = 0.7) -> str:
         """Call Claude and record token usage. Returns the text response."""
+        if not self._check_budget():
+            raise RuntimeError(
+                f"Daily API budget (${self.DAILY_BUDGET_USD}) exceeded. "
+                "LLM calls paused until tomorrow. Adjust DAILY_BUDGET_USD to increase."
+            )
         if has_api_key():
             return self._call_api(prompt, model_key, system, max_tokens, task_type, temperature)
         return self._call_via_queue(prompt, model_key, system, max_tokens, task_type, temperature)

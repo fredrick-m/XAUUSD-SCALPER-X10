@@ -163,12 +163,30 @@ class PluginScout(BaseAgent):
 
     # ── Safe installation ──────────────────────────────────────────────────────
 
+    # Allowlist of packages safe to auto-install
+    APPROVED_PACKAGES = {
+        "pandas-ta", "ta-lib", "mplfinance", "vectorbt", "backtesting",
+        "pyalgotrade", "finplot", "lightweight-charts", "yfinance",
+        "ccxt", "freqtrade", "jesse", "tulipy", "finta",
+    }
+
     def _safe_install(self, package_name: str) -> bool:
         """
         Install a pip package in a subprocess. Returns True on success.
-        Uses --dry-run first to check for conflicts.
+        Only installs packages from the approved allowlist.
         """
-        self.logger.info(f"Attempting to install: {package_name}")
+        if package_name not in self.APPROVED_PACKAGES:
+            self.logger.info(f"Skipping {package_name}: not in approved allowlist (scout-only)")
+            self._register_plugin(
+                plugin_id=package_name,
+                name=package_name,
+                source_url="",
+                install_type="scouted",
+                description=f"Discovered but not auto-installed (not in allowlist)",
+            )
+            return False
+
+        self.logger.info(f"Attempting to install approved package: {package_name}")
         try:
             # Dry run first
             result = subprocess.run(

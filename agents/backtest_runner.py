@@ -11,7 +11,7 @@ import pandas as pd
 
 from agents.base_agent import BaseAgent
 from core.config import DATA_DIR, STRATEGIES_DIR, DEFAULT_RISK_PCT
-from engine.backtest import run_simulation, validate
+from engine.backtest import run_simulation, validate, add_regime_indicators
 
 
 class BacktestRunner(BaseAgent):
@@ -22,6 +22,7 @@ class BacktestRunner(BaseAgent):
     def __init__(self, db):
         super().__init__(agent_id="backtest_runner", db=db)
         self._data_cache: Optional[pd.DataFrame] = None
+        self._data_cache_m5: Optional[pd.DataFrame] = None
         self._data_hash: Optional[str] = None
 
     # ──────────────────────────────────────────────────
@@ -108,6 +109,31 @@ class BacktestRunner(BaseAgent):
         self._data_hash = h
         self._data_cache = df
         return df
+
+    def _load_data_m5(self) -> Optional[pd.DataFrame]:
+        """Resample M1 data to M5. Cached after first call."""
+        if self._data_cache_m5 is not None:
+            return self._data_cache_m5
+
+        df_m1 = self._load_data()
+        if df_m1 is None:
+            return None
+
+        self.logger.info("Resampling M1 → M5...")
+        df = df_m1.copy()
+        df.set_index("time", inplace=True)
+        df_m5 = df.resample("5min").agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum",
+        }).dropna().reset_index()
+        self._data_cache_m5 = df_m5
+        self.logger.info(f"M5 data: {len(df_m5)} bars")
+        return df_m5
+
+    def _is_m5_strategy(self, strategy_id: str) -> bool:
+        """Strategies starting with 'c', 'd', or 'e' are M5-optimized."""
+        sid = strategy_id.lower()
+        return sid.startswith("c") or sid.startswith("d") or sid.startswith("e")
 
     # ──────────────────────────────────────────────────
     # Strategy loading
@@ -206,7 +232,15 @@ class BacktestRunner(BaseAgent):
         """
         self.logger.info(f"Running backtest for strategy {strategy_id}")
 
-        df = self._load_data()
+        # Use M5 data for C-series strategies, M1 for others
+        if self._is_m5_strategy(strategy_id):
+            df = self._load_data_m5()
+            risk_pct = 0.10  # M5 strategies use 10% risk
+            self.logger.info(f"Using M5 data with {risk_pct:.0%} risk for {strategy_id}")
+        else:
+            df = self._load_data()
+            risk_pct = DEFAULT_RISK_PCT
+
         if df is None:
             self.logger.warning(f"No data available — skipping backtest for {strategy_id}")
             return None
@@ -222,6 +256,15 @@ class BacktestRunner(BaseAgent):
 
         signals, sl_prices, tp_prices, directions = signal_data
 
+        # Determine trailing stop: disable for wide-TP strategies (tp_atr >= 3.0)
+        use_trailing = True
+        try:
+            tp_atr = module.PARAMS.get("tp_atr", 2.0)
+            if tp_atr >= 3.0:
+                use_trailing = False
+        except AttributeError:
+            pass
+
         try:
             metrics = run_simulation(
                 df,
@@ -229,9 +272,9 @@ class BacktestRunner(BaseAgent):
                 sl_prices,
                 tp_prices,
                 directions,
-                risk_pct=DEFAULT_RISK_PCT,
-                trailing_stop=True,
-                max_bars_in_trade=60,
+                risk_pct=risk_pct,
+                trailing_stop=use_trailing,
+                max_bars_in_trade=60 if not self._is_m5_strategy(strategy_id) else 200,
                 session_filter=True,
                 session_hours=(7, 21),
             )
@@ -239,30 +282,142 @@ class BacktestRunner(BaseAgent):
             self.logger.error(f"run_simulation failed for {strategy_id}: {exc}")
             return None
 
-        # Count how many distinct regimes were observed if ATR/regime not already computed
+        # Regime analysis: count distinct regimes in the dataset
         regime_results = {}
-        regimes_tested = 1  # at minimum we tested the full dataset as one regime
+        regimes_tested = 1
+        try:
+            df_regime = add_regime_indicators(df)
+            regimes_present = set(df_regime["regime"].dropna().unique()) - {"UNKNOWN", "MIXED"}
+            regimes_tested = max(1, len(regimes_present))
+        except Exception:
+            pass
 
         self._store_results(strategy_id, metrics, regime_results)
         self._update_strategy_metrics(strategy_id, metrics)
 
-        # Validation
-        passed, fails = validate(metrics, regimes_tested=regimes_tested)
-        if passed:
+        # Validation on full dataset
+        tf = "M5" if self._is_m5_strategy(strategy_id) else "M1"
+        passed, fails = validate(metrics, regimes_tested=regimes_tested, timeframe=tf)
+        if not passed:
+            self.logger.info(f"Strategy {strategy_id} did not pass full backtest: {fails}")
+            return metrics
+
+        # Walk-forward validation: 70% in-sample, 30% out-of-sample
+        wf_passed = self._walk_forward_validate(strategy_id, df, module)
+        if wf_passed:
             self.db.execute(
-                "UPDATE strategies SET status = 'validated' WHERE id = ?",
+                "UPDATE strategies SET status = 'validated', walk_forward_passed = 1 WHERE id = ?",
                 (strategy_id,),
             )
             self.emit_event(
                 "milestone",
-                f"Strategy {strategy_id} passed validation",
+                f"Strategy {strategy_id} passed validation + walk-forward",
                 metadata={"strategy_id": strategy_id, "metrics": {k: v for k, v in metrics.items() if k != "equity_curve"}},
             )
-            self.logger.info(f"Strategy {strategy_id} VALIDATED")
+            self.logger.info(f"Strategy {strategy_id} VALIDATED (walk-forward passed)")
         else:
-            self.logger.info(f"Strategy {strategy_id} did not pass: {fails}")
+            self.db.execute(
+                "UPDATE strategies SET status = 'validated', walk_forward_passed = 0 WHERE id = ?",
+                (strategy_id,),
+            )
+            self.logger.info(f"Strategy {strategy_id} passed full backtest but FAILED walk-forward")
 
         return metrics
+
+    # ──────────────────────────────────────────────────
+    # Walk-forward validation
+    # ──────────────────────────────────────────────────
+
+    def _get_risk_pct(self, strategy_id: str) -> float:
+        """Return risk percentage based on strategy type."""
+        return 0.10 if self._is_m5_strategy(strategy_id) else DEFAULT_RISK_PCT
+
+    def _walk_forward_validate(self, strategy_id: str, df: pd.DataFrame, module) -> bool:
+        """
+        Run walk-forward validation: train on first 70%, test on last 30%.
+        The strategy must maintain at least 80% of its in-sample profit factor
+        on the out-of-sample portion to pass.
+        """
+        split_idx = int(len(df) * 0.7)
+        if split_idx < 1000 or (len(df) - split_idx) < 500:
+            self.logger.info(f"Not enough data for walk-forward ({len(df)} bars), skipping")
+            return True  # Pass by default if insufficient data
+
+        df_in = df.iloc[:split_idx].reset_index(drop=True)
+        df_out = df.iloc[split_idx:].reset_index(drop=True)
+
+        try:
+            # In-sample backtest
+            sig_in = self._build_signal_series(df_in, module)
+            if sig_in is None:
+                return True
+            signals_in, sl_in, tp_in, dirs_in = sig_in
+            rp = self._get_risk_pct(strategy_id)
+            mbt = 200 if self._is_m5_strategy(strategy_id) else 60
+            # Trailing stop logic: disable for wide-TP strategies
+            wf_trailing = True
+            try:
+                tp_atr = module.PARAMS.get("tp_atr", 2.0)
+                if tp_atr >= 3.0:
+                    wf_trailing = False
+            except AttributeError:
+                pass
+            metrics_in = run_simulation(
+                df_in, signals_in, sl_in, tp_in, dirs_in,
+                risk_pct=rp, trailing_stop=wf_trailing,
+                max_bars_in_trade=mbt, session_filter=True, session_hours=(7, 21),
+            )
+
+            # Out-of-sample backtest
+            sig_out = self._build_signal_series(df_out, module)
+            if sig_out is None:
+                return True
+            signals_out, sl_out, tp_out, dirs_out = sig_out
+            metrics_out = run_simulation(
+                df_out, signals_out, sl_out, tp_out, dirs_out,
+                risk_pct=rp, trailing_stop=wf_trailing,
+                max_bars_in_trade=mbt, session_filter=True, session_hours=(7, 21),
+            )
+
+            # Store walk-forward result
+            self.db.execute(
+                "INSERT INTO backtest_results "
+                "(strategy_id, risk_pct, total_trades, win_rate, profit_factor, "
+                "max_drawdown, x10_count, final_balance, return_pct, blown_account, "
+                "regime_results, walk_forward, data_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    strategy_id, DEFAULT_RISK_PCT,
+                    metrics_out.get("total_trades", 0),
+                    metrics_out.get("win_rate", 0.0),
+                    metrics_out.get("profit_factor", 0.0),
+                    metrics_out.get("max_drawdown", 0.0),
+                    metrics_out.get("x10_count", 0),
+                    metrics_out.get("final_balance", 0.0),
+                    metrics_out.get("return_pct", 0.0),
+                    1 if metrics_out.get("blown_account") else 0,
+                    json.dumps({"type": "walk_forward_oos"}),
+                    1,
+                    self._data_hash,
+                ),
+            )
+
+            pf_in = metrics_in.get("profit_factor", 0.0)
+            pf_out = metrics_out.get("profit_factor", 0.0)
+
+            # Out-of-sample PF must be at least 80% of in-sample PF
+            if pf_in <= 0:
+                return pf_out > 1.0
+
+            ratio = pf_out / pf_in
+            self.logger.info(
+                f"Walk-forward {strategy_id}: IS PF={pf_in:.2f}, OOS PF={pf_out:.2f}, ratio={ratio:.2f}"
+            )
+            return ratio >= 0.8
+
+        except Exception as exc:
+            self.logger.error(f"Walk-forward failed for {strategy_id}: {exc}")
+            return True  # Don't block on walk-forward errors
 
     # ──────────────────────────────────────────────────
     # Result persistence

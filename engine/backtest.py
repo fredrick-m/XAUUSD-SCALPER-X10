@@ -34,6 +34,12 @@ from core.config import (
     MIN_X10_COUNT,
     MIN_TRADES,
     MIN_REGIMES,
+    M5_MIN_WIN_RATE,
+    M5_MIN_PROFIT_FACTOR,
+    M5_MAX_DRAWDOWN,
+    M5_MIN_X10_COUNT,
+    M5_MIN_TRADES,
+    M5_MIN_REGIMES,
 )
 
 # Re-export INITIAL_BALANCE so tests can import it directly from this module
@@ -353,23 +359,38 @@ def run_simulation(
 # Validation
 # ══════════════════════════════════════════════
 
-def validate(metrics: dict, regimes_tested: int) -> Tuple[bool, List[str]]:
+def validate(metrics: dict, regimes_tested: int, timeframe: str = "M1") -> Tuple[bool, List[str]]:
     """
     Check whether backtest metrics meet all validation criteria.
 
     Returns (passed, list_of_failing_criteria).
     """
+    if timeframe == "M5":
+        min_wr = M5_MIN_WIN_RATE
+        min_pf = M5_MIN_PROFIT_FACTOR
+        max_dd = M5_MAX_DRAWDOWN
+        min_x10 = M5_MIN_X10_COUNT
+        min_trades = M5_MIN_TRADES
+        min_regimes = M5_MIN_REGIMES
+    else:
+        min_wr = MIN_WIN_RATE
+        min_pf = MIN_PROFIT_FACTOR
+        max_dd = MAX_DRAWDOWN
+        min_x10 = MIN_X10_COUNT
+        min_trades = MIN_TRADES
+        min_regimes = MIN_REGIMES
+
     fails = []
-    if metrics["win_rate"] <= MIN_WIN_RATE:
-        fails.append(f"WR {metrics['win_rate']:.1%} <= {MIN_WIN_RATE:.0%}")
-    if metrics["profit_factor"] < MIN_PROFIT_FACTOR:
-        fails.append(f"PF {metrics['profit_factor']:.2f} < {MIN_PROFIT_FACTOR}")
-    if metrics["max_drawdown"] >= MAX_DRAWDOWN:
-        fails.append(f"DD {metrics['max_drawdown']:.1%} >= {MAX_DRAWDOWN:.0%}")
-    if metrics["x10_count"] < MIN_X10_COUNT:
-        fails.append(f"x10_count {metrics['x10_count']} < {MIN_X10_COUNT}")
-    if metrics["total_trades"] < MIN_TRADES:
-        fails.append(f"trades {metrics['total_trades']} < {MIN_TRADES}")
-    if regimes_tested < MIN_REGIMES:
-        fails.append(f"regimes {regimes_tested} < {MIN_REGIMES}")
+    if metrics["win_rate"] <= min_wr:
+        fails.append(f"WR {metrics['win_rate']:.1%} <= {min_wr:.0%}")
+    if metrics["profit_factor"] < min_pf:
+        fails.append(f"PF {metrics['profit_factor']:.2f} < {min_pf}")
+    if metrics["max_drawdown"] >= max_dd:
+        fails.append(f"DD {metrics['max_drawdown']:.1%} >= {max_dd:.0%}")
+    if metrics["x10_count"] < min_x10:
+        fails.append(f"x10_count {metrics['x10_count']} < {min_x10}")
+    if metrics["total_trades"] < min_trades:
+        fails.append(f"trades {metrics['total_trades']} < {min_trades}")
+    if regimes_tested < min_regimes:
+        fails.append(f"regimes {regimes_tested} < {min_regimes}")
     return (len(fails) == 0, fails)

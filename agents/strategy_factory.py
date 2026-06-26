@@ -62,7 +62,7 @@ def validate_strategy_code(code: str) -> Tuple[bool, str]:
 def _strip_code_fences(text: str) -> str:
     """Remove ```python … ``` or ``` … ``` wrappers from LLM output."""
     # Match optional language tag after opening fence
-    pattern = r"```(?:python)?\s*\n(.*?)```"
+    pattern = r"```(?:python)?\s*\n?(.*?)```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
         return match.group(1).strip()

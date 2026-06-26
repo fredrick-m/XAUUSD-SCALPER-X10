@@ -1,7 +1,7 @@
 """Data Agent: acquires, maintains, and quality-checks market data."""
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,7 +18,9 @@ def quality_score(file_path) -> float:
     if not file_path.exists():
         return 0.0
     try:
-        df = pd.read_csv(file_path, parse_dates=["time"] if "time" in pd.read_csv(file_path, nrows=0).columns else [0])
+        header = pd.read_csv(file_path, nrows=0)
+        date_col = ["time"] if "time" in header.columns else [0]
+        df = pd.read_csv(file_path, parse_dates=date_col)
     except Exception:
         return 0.0
     if len(df) < 10:
@@ -81,7 +83,8 @@ class DataAgent(BaseAgent):
         for csv_file in sorted(raw_dir.glob("*.csv")):
             try:
                 df = pd.read_csv(csv_file, nrows=5)
-                total_rows = sum(1 for _ in open(csv_file, encoding="utf-8")) - 1
+                with open(csv_file, encoding="utf-8") as f:
+                    total_rows = sum(1 for _ in f) - 1
                 fname = csv_file.stem.upper()
                 if "M1" in fname:
                     tf = "M1"
@@ -134,7 +137,7 @@ class DataAgent(BaseAgent):
                 return
             self.emit_event("info", "MT5 connected, downloading XAUUSD M1 data")
             from datetime import timedelta
-            utc_to = datetime.utcnow()
+            utc_to = datetime.now(timezone.utc)
             utc_from = utc_to - timedelta(days=365)
             rates = mt5.copy_rates_range("XAUUSD", mt5.TIMEFRAME_M1, utc_from, utc_to)
             mt5.shutdown()

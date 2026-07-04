@@ -73,6 +73,10 @@ BASE_PARAMS = {
     # the Asian session. Ranges guarantee start < end.
     "session_start": (7, 12),
     "session_end": (15, 21),
+    # Trailing stop as a searchable gene (0=fixed SL/TP, 1=trail after 1R).
+    # The engine hard-disables it when tp_atr >= 3.0 (proven to kill
+    # wide-TP strategies) regardless of this value.
+    "trailing": (0, 1),
 }
 
 # ---------------------------------------------------------------------------

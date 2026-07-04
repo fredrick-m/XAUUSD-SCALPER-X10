@@ -49,7 +49,12 @@ class TradeSupervisor(BaseAgent):
         if not open_trades:
             return
 
-        # 2. Check directional correlation
+        # 2. Trailing stops: replicate the engine's exit management on MT5.
+        # Backtests simulate trailing — without this, validated strategies
+        # would trade live with exits they were never validated on.
+        self._manage_trailing_stops(open_trades)
+
+        # 3. Check directional correlation
         self._check_correlation(open_trades)
 
         # 3. Check for stale trades
@@ -306,6 +311,105 @@ class TradeSupervisor(BaseAgent):
                 metadata={"strategy_id": strategy_id, "reason": "divergence_early",
                           "live_wr": live_wr, "backtest_wr": bt_wr},
             )
+
+    # ──────────────────────────────────────────────────
+    # Trailing stop management (mirrors engine/backtest.py)
+    # ──────────────────────────────────────────────────
+
+    @staticmethod
+    def compute_trailing_sl(direction: str, entry: float, initial_risk: float,
+                            current_price: float, current_sl: float):
+        """Engine-identical trailing rule. Returns the new SL or None.
+
+        Activates once unrealized profit >= 1R, then trails the price by
+        the initial risk distance. Only ever tightens, and only when the
+        improvement is at least 10% of 1R (avoids modify-order spam).
+        """
+        if initial_risk <= 0:
+            return None
+        min_step = initial_risk * 0.10
+        if direction == "buy":
+            if current_price - entry < initial_risk:
+                return None
+            new_sl = current_price - initial_risk
+            if new_sl > current_sl + min_step:
+                return new_sl
+        else:
+            if entry - current_price < initial_risk:
+                return None
+            new_sl = current_price + initial_risk
+            if new_sl < current_sl - min_step:
+                return new_sl
+        return None
+
+    def _manage_trailing_stops(self, open_trades: list):
+        """Apply the trailing rule to open MT5 positions whose strategy
+        trades with trailing enabled (the 'trailing' param, wide-TP rule
+        on top — identical to the backtest worker)."""
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            return
+        if not mt5.terminal_info():
+            return
+
+        from agents.template_factory import TemplateFactory
+
+        for trade in open_trades:
+            ticket = trade.get("ticket")
+            entry = trade.get("entry_price")
+            original_sl = trade.get("sl")
+            if not ticket or not entry or not original_sl:
+                continue
+
+            # Strategy trailing gene (same defaults as the backtest worker)
+            srow = self.db.fetchone(
+                "SELECT file_path FROM strategies WHERE id = ?",
+                (trade["strategy_id"],),
+            )
+            params = (TemplateFactory._load_params_from_file(srow["file_path"])
+                      if srow and srow["file_path"] else {})
+            use_trailing = bool(params.get("trailing", 1))
+            if params.get("tp_atr", 2.0) >= 3.0:
+                use_trailing = False
+            if not use_trailing:
+                continue
+
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions:
+                continue
+            pos = positions[0]
+
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if tick is None:
+                continue
+            price = tick.bid if trade["direction"] == "buy" else tick.ask
+
+            # DB keeps the ORIGINAL SL, so 1R stays stable across trailing
+            initial_risk = abs(entry - original_sl)
+            new_sl = self.compute_trailing_sl(
+                trade["direction"], entry, initial_risk, price, pos.sl or original_sl
+            )
+            if new_sl is None:
+                continue
+
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": ticket,
+                "symbol": pos.symbol,
+                "sl": round(new_sl, 2),
+                "tp": pos.tp,
+            })
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(
+                    f"Trailing SL: {trade['strategy_id']} #{ticket} "
+                    f"SL -> {new_sl:.2f} (price {price:.2f})"
+                )
+            else:
+                self.logger.warning(
+                    f"Trailing SL modify failed for #{ticket}: "
+                    f"{result.comment if result else 'no result'}"
+                )
 
     # ──────────────────────────────────────────────────
     # Correlation check

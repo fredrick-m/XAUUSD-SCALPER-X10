@@ -98,13 +98,14 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes, data_
     directions[long_mask] = 1
     directions[short_mask] = -1
 
-    # Trailing stop logic
-    use_trailing = True
+    # Trailing stop: per-strategy gene ('trailing' param), with the proven
+    # hard rule on top — wide-TP strategies (tp_atr >= 3.0) never trail.
     try:
+        use_trailing = bool(params.get("trailing", 1))
         if params.get("tp_atr", 2.0) >= 3.0:
             use_trailing = False
     except Exception:
-        pass
+        use_trailing = False
 
     # Per-strategy trading session (new search dimension; defaults keep old
     # behaviour for strategies generated before sessions were parameterized)

@@ -6,12 +6,20 @@ An improved version of backtests/engine.py with additional features:
 - max_bars_in_trade: Force close at bar's Close after N bars (time exit)
 - session_filter  : Skip entries outside active session hours
 
-Transaction Costs (realistic Exness XAUUSD M1)
+Transaction Costs (realistic MT5 XAUUSD)
 -----------------------------------------------
 - Entry at Open of bar N+1 (next-bar entry — no look-ahead bias)
-- Spread: per-bar from data 'spread' column (÷1000 for price), else DEFAULT_SPREAD
+- Spread: per-bar from data 'spread' column (MT5 points × 0.01 = price units
+  for XAUUSD, digits=2), else DEFAULT_SPREAD
+- FULL spread charged per round trip on the ask-side leg (bars are bid
+  quotes): longs pay it on entry, shorts pay it on exit
 - Slippage: SLIPPAGE_PER_FILL per fill (entry + exit), always against the trade
 - Pessimistic: when SL and TP both hit on same bar, SL is assumed first
+- Gap-aware SL fills: if the bar opens beyond the SL, the fill is at the open
+- Trailing stop only takes effect from the bar AFTER it is raised (no
+  intra-bar "high happened before low" optimism)
+- Drawdown is tracked on floating equity (open positions marked to market),
+  not just closed balance
 """
 
 import math
@@ -142,7 +150,7 @@ def run_simulation(
     Parameters
     ----------
     df                 : OHLCV DataFrame (indexed 0..N), may contain 'spread' column
-                         (MT5 points — divided by 1000 to get price units).
+                         (MT5 points — × 0.01 for XAUUSD price units, digits=2).
     signals            : Series of 1 (long), -1 (short), 0 (no signal).
     sl_prices          : Series of SL prices (used at signal bar index).
     tp_prices          : Series of TP prices.
@@ -197,30 +205,50 @@ def run_simulation(
 
     n_bars = len(df)
 
+    # ── Pre-extract numpy arrays for speed (avoids pandas iloc overhead) ──
+    arr_open  = df["Open"].values
+    arr_high  = df["High"].values
+    arr_low   = df["Low"].values
+    arr_close = df["Close"].values
+    arr_signals  = signals.values
+    arr_sl       = sl_prices.values
+    arr_tp       = tp_prices.values
+
+    if session_filter and "time" in df.columns:
+        arr_hours = pd.to_datetime(df["time"]).dt.hour.values
+    else:
+        arr_hours = None
+
+    if has_spread_col:
+        arr_spread = df["spread"].values
+    else:
+        arr_spread = None
+
     for i in range(n_bars):
-        row = df.iloc[i]
+        # ── Per-bar spread (MT5 'spread' is in points; XAUUSD point = 0.01).
+        # Floored at 5 cents: never assume a better spread than reality. ──
+        if spread_override is not None:
+            bar_spread = spread_override
+        elif arr_spread is not None:
+            bar_spread = max(arr_spread[i] * 0.01, 0.05)
+        else:
+            bar_spread = DEFAULT_SPREAD
 
         # ── Session filter on pending entry ──────────
-        if pending_entry and not in_trade and session_filter:
-            bar_hour = pd.Timestamp(row["time"]).hour
-            # Discard pending entry if outside active session
+        if pending_entry and not in_trade and session_filter and arr_hours is not None:
+            bar_hour = int(arr_hours[i])
             if not (session_start <= bar_hour < session_end):
                 pending_entry = False
 
         # ── Execute pending entry at this bar's Open ──
         if pending_entry and not in_trade:
-            if spread_override is not None:
-                bar_spread = spread_override
-            elif has_spread_col:
-                bar_spread = row["spread"] / 1000.0   # MT5 points → price units
+            raw_entry = arr_open[i]
+            # Bars are bid quotes: a long buys at the ask (bid + FULL spread);
+            # a short sells at the bid and pays the spread on exit instead.
+            if pending_dir == 1:
+                entry_px = raw_entry + bar_spread + slippage
             else:
-                bar_spread = DEFAULT_SPREAD
-
-            raw_entry = row["Open"]
-            if pending_dir == 1:   # long: buy at ask = open + half_spread + slippage
-                entry_px = raw_entry + bar_spread / 2.0 + slippage
-            else:                  # short: sell at bid = open - half_spread - slippage
-                entry_px = raw_entry - bar_spread / 2.0 - slippage
+                entry_px = raw_entry - slippage
 
             sl        = pending_sl
             tp        = pending_tp
@@ -229,7 +257,7 @@ def run_simulation(
 
             if sl_distance > 0:
                 current_lot  = dynamic_lot(balance, sl_distance, risk_pct)
-                initial_risk = sl_distance          # 1R in price units
+                initial_risk = sl_distance
                 in_trade     = True
                 bars_in_trade = 0
                 trailing_activated = False
@@ -239,53 +267,37 @@ def run_simulation(
         # ── Manage open trade ──────────────────────────
         if in_trade:
             bars_in_trade += 1
-
-            # ── Trailing stop logic ──────────────────
-            if trailing_stop:
-                if direction == 1:   # long
-                    unrealized = row["High"] - entry_px
-                    if unrealized >= initial_risk:
-                        # Move SL to at least breakeven, then trail by initial_risk behind High
-                        new_sl = row["High"] - initial_risk
-                        if new_sl > sl:
-                            sl = new_sl
-                else:                # short
-                    unrealized = entry_px - row["Low"]
-                    if unrealized >= initial_risk:
-                        new_sl = row["Low"] + initial_risk
-                        if new_sl < sl:
-                            sl = new_sl
+            bar_high = arr_high[i]
+            bar_low  = arr_low[i]
+            bar_open = arr_open[i]
 
             # ── Time exit (checked before SL/TP) ────
             if max_bars_in_trade > 0 and bars_in_trade >= max_bars_in_trade:
-                # Force close at Close of this bar
-                raw_exit = row["Close"]
+                raw_exit = arr_close[i]
                 if direction == 1:
                     exit_px = raw_exit - slippage
                 else:
-                    exit_px = raw_exit + slippage
+                    exit_px = raw_exit + bar_spread + slippage  # short buys back at ask
                 pnl = profit(entry_px, exit_px, direction, current_lot)
                 balance += pnl
                 trades.append(pnl)
                 in_trade = False
             else:
                 # ── SL / TP check ────────────────────
-                hit_sl = False
-                hit_tp = False
+                if direction == 1:
+                    hit_sl = bar_low <= sl
+                    hit_tp = bar_high >= tp
+                else:
+                    hit_sl = bar_high >= sl
+                    hit_tp = bar_low <= tp
 
-                if direction == 1:   # long
-                    hit_sl = row["Low"] <= sl
-                    hit_tp = row["High"] >= tp
-                else:                # short
-                    hit_sl = row["High"] >= sl
-                    hit_tp = row["Low"] <= tp
-
-                # Pessimistic: SL before TP on same bar
                 if hit_sl:
+                    # Gap-aware: if the bar OPENS beyond the SL, the fill
+                    # happens at the open, not at the SL price.
                     if direction == 1:
-                        exit_px = sl - slippage
+                        exit_px = min(sl, bar_open) - slippage
                     else:
-                        exit_px = sl + slippage
+                        exit_px = max(sl, bar_open) + bar_spread + slippage
                     pnl = profit(entry_px, exit_px, direction, current_lot)
                     balance += pnl
                     trades.append(pnl)
@@ -294,7 +306,7 @@ def run_simulation(
                     if direction == 1:
                         exit_px = tp - slippage
                     else:
-                        exit_px = tp + slippage
+                        exit_px = tp + bar_spread + slippage
                     pnl = profit(entry_px, exit_px, direction, current_lot)
                     balance += pnl
                     trades.append(pnl)
@@ -305,6 +317,23 @@ def run_simulation(
                 x10_count += 1
                 next_x10_target *= 10
 
+            # ── Trailing stop: updated AFTER exit checks, so a stop raised
+            # on this bar can only be hit from the NEXT bar. Trailing before
+            # the check would assume the high printed before the low. ──
+            if trailing_stop and in_trade:
+                if direction == 1:
+                    unrealized = bar_high - entry_px
+                    if unrealized >= initial_risk:
+                        new_sl = bar_high - initial_risk
+                        if new_sl > sl:
+                            sl = new_sl
+                else:
+                    unrealized = entry_px - bar_low
+                    if unrealized >= initial_risk:
+                        new_sl = bar_low + initial_risk
+                        if new_sl < sl:
+                            sl = new_sl
+
         # ── Circuit breaker: account blown ───────────
         if balance <= 0:
             balance = 0.0
@@ -312,21 +341,31 @@ def run_simulation(
             break
 
         # ── Register signal for next-bar entry ───────
-        sig = signals.iloc[i]
+        sig = arr_signals[i]
         if not in_trade and not pending_entry and sig != 0:
-            sl_val = sl_prices.iloc[i]
-            tp_val = tp_prices.iloc[i]
+            sl_val = arr_sl[i]
+            tp_val = arr_tp[i]
             if not (math.isnan(float(sl_val)) or math.isnan(float(tp_val))):
                 pending_entry = True
                 pending_sl    = float(sl_val)
                 pending_tp    = float(tp_val)
                 pending_dir   = int(sig)
 
-        # ── Track drawdown ───────────────────────────
-        equity_curve.append(balance)
-        if balance > equity_peak:
-            equity_peak = balance
-        dd = (equity_peak - balance) / equity_peak if equity_peak > 0 else 0.0
+        # ── Track drawdown on floating equity ────────
+        # Open positions are marked to market at the bar close so the
+        # drawdown reflects what the account actually experiences.
+        if in_trade:
+            if direction == 1:
+                mark_px = arr_close[i]                # long exits at bid
+            else:
+                mark_px = arr_close[i] + bar_spread   # short buys back at ask
+            equity = balance + profit(entry_px, mark_px, direction, current_lot)
+        else:
+            equity = balance
+        equity_curve.append(equity)
+        if equity > equity_peak:
+            equity_peak = equity
+        dd = (equity_peak - equity) / equity_peak if equity_peak > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
 
@@ -381,8 +420,8 @@ def validate(metrics: dict, regimes_tested: int, timeframe: str = "M1") -> Tuple
         min_regimes = MIN_REGIMES
 
     fails = []
-    if metrics["win_rate"] <= min_wr:
-        fails.append(f"WR {metrics['win_rate']:.1%} <= {min_wr:.0%}")
+    if metrics["win_rate"] < min_wr:
+        fails.append(f"WR {metrics['win_rate']:.1%} < {min_wr:.0%}")
     if metrics["profit_factor"] < min_pf:
         fails.append(f"PF {metrics['profit_factor']:.2f} < {min_pf}")
     if metrics["max_drawdown"] >= max_dd:

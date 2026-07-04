@@ -60,6 +60,7 @@ class DataAgent(BaseAgent):
         if total_m1_bars < 250_000:
             self.emit_event("warning", f"Only {total_m1_bars} M1 bars available, need 250k+")
             self._try_download_mt5()
+        self._refresh_m1_data()
         for entry in existing:
             self.register_data(
                 data_id=entry["id"],
@@ -128,6 +129,67 @@ class DataAgent(BaseAgent):
                 "bar_count, quality_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (data_id, timeframe, source, file_path, start_date, end_date, bar_count, quality),
             )
+
+    def _refresh_m1_data(self):
+        """Append fresh M1 bars from MT5 to the main dataset once a day.
+
+        Keeps the dataset — and therefore the sliding 6-month holdout —
+        current, so strategies are always validated against recent market
+        behaviour instead of a frozen snapshot.
+        """
+        main_csv = DATA_DIR / "raw" / "XAUUSD_M1.csv"
+        if not main_csv.exists():
+            return
+        try:
+            last_line = None
+            with open(main_csv, "rb") as f:
+                f.seek(-2048, 2)
+                last_line = f.read().decode("utf-8", errors="ignore").strip().splitlines()[-1]
+            last_time = pd.to_datetime(last_line.split(",")[0])
+        except Exception:
+            return
+
+        age_hours = (datetime.now() - last_time).total_seconds() / 3600
+        if age_hours < 24:
+            return  # fresh enough
+
+        try:
+            import MetaTrader5 as mt5
+            if not mt5.initialize():
+                return
+            rates = mt5.copy_rates_range(
+                "XAUUSD", mt5.TIMEFRAME_M1,
+                last_time.to_pydatetime(), datetime.now(timezone.utc),
+            )
+            mt5.shutdown()
+            if rates is None or len(rates) < 10:
+                return
+
+            df_new = pd.DataFrame(rates)
+            df_new["time"] = pd.to_datetime(df_new["time"], unit="s")
+            df_new = df_new.rename(columns={
+                "open": "Open", "high": "High", "low": "Low",
+                "close": "Close", "tick_volume": "Volume",
+            })
+            df_new = df_new[df_new["time"] > last_time]
+            if df_new.empty:
+                return
+
+            header_cols = pd.read_csv(main_csv, nrows=0).columns.tolist()
+            for col in header_cols:
+                if col not in df_new.columns:
+                    df_new[col] = 0
+            df_new[header_cols].to_csv(main_csv, mode="a", header=False, index=False)
+            self.emit_event(
+                "milestone",
+                f"M1 dataset refreshed: +{len(df_new)} bars "
+                f"(now through {df_new['time'].iloc[-1]})",
+            )
+            self.logger.info(f"M1 refresh: appended {len(df_new)} bars")
+        except ImportError:
+            pass
+        except Exception as e:
+            self.logger.warning(f"M1 refresh failed: {e}")
 
     def _try_download_mt5(self):
         try:

@@ -11,6 +11,12 @@ data/processed/
 .env.*
 .claude/settings.local.json
 
+# Base de données runtime et logs — état vivant, pas du code
+agent_db.sqlite
+agent_db.sqlite-shm
+agent_db.sqlite-wal
+logs/
+
 # Python
 __pycache__/
 *.pyc

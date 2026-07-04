@@ -24,21 +24,63 @@ class EvolutionAgent(BaseAgent):
         self.logger.info("Evolution Agent ready")
 
     def tick(self):
+        # Only evolve strategies with PF > 0.8 (worth iterating on)
         top = self._select_top_strategies(limit=10)
         if not top:
             self.logger.info("No strategies to evolve yet")
             return
 
+        # Skip if backtest queue is too deep — don't flood
+        # Only count T-series and new E-series (exclude legacy E0001-E3392)
+        pending = self.db.fetchone(
+            "SELECT COUNT(*) as cnt FROM strategies s "
+            "LEFT JOIN backtest_results b ON s.id = b.strategy_id "
+            "WHERE s.status = 'candidate' AND b.id IS NULL "
+            "AND (s.id LIKE 'T%' OR s.id > 'E3392')"
+        )
+        # 2000 (was 200): the factory keeps the queue topped up, so a low
+        # threshold starved evolution forever. Directed children of proven
+        # winners deserve queue slots more than fresh random candidates.
+        if pending and pending["cnt"] > 2000:
+            self.logger.info(f"Backtest queue has {pending['cnt']} pending — skipping evolution tick")
+            self._retire_poor_strategies(min_runs=3, max_score=0.3)
+            return
+
         self.logger.info(f"Selected {len(top)} strategies for evolution")
 
-        # 1. Mutation: create mutated copies of top strategies
+        # 1. Mutation: create 1 mutated copy of each top-5 strategy (5 total).
+        # DIRECTED evolution: a parent with strong quality but a small trade
+        # count (the probation profile) gets frequency-targeted mutations —
+        # the goal is the same edge firing more often, not a different edge.
         mutations_created = 0
         for strat in top[:5]:
             strategy_id = strat["id"]
             config = self._load_strategy_config(strategy_id)
             if config is None:
                 continue
-            mutated = self._mutate_params(config, mutation_rate=0.5, mutation_range=0.2)
+
+            parent_pf = strat.get("best_profit_factor") or 0.0
+            trades_row = self.db.fetchone(
+                "SELECT MAX(total_trades) AS t FROM backtest_results WHERE strategy_id = ?",
+                (strategy_id,),
+            )
+            parent_trades = (trades_row["t"] or 0) if trades_row else 0
+
+            if parent_pf >= 1.5 and 0 < parent_trades < 100:
+                # Frequency-directed: gentle mutations on the logic params,
+                # aggressive push on the frequency levers.
+                mutated = self._mutate_params(config, mutation_rate=0.4, mutation_range=0.15)
+                if "cooldown" in mutated:
+                    mutated["cooldown"] = max(1, int(mutated["cooldown"] * 0.5))
+                if "session_start" in mutated:
+                    mutated["session_start"] = max(2, int(mutated["session_start"]) - random.randint(1, 3))
+                if "session_end" in mutated:
+                    mutated["session_end"] = min(23, int(mutated["session_end"]) + random.randint(1, 3))
+                desc = f"Frequency-directed mutation of {strategy_id} (PF {parent_pf:.2f}, {parent_trades} trades)"
+            else:
+                mutated = self._mutate_params(config, mutation_rate=0.6, mutation_range=0.3)
+                desc = f"Mutation of {strategy_id}"
+
             evo_id = self._next_evolution_id()
             self._create_evolved_strategy(
                 evo_id=evo_id,
@@ -46,19 +88,17 @@ class EvolutionAgent(BaseAgent):
                 parent_generation=strat.get("generation", 1),
                 params=mutated,
                 family=strat.get("family", "evolved"),
-                description=f"Mutation of {strategy_id}",
+                description=desc,
             )
             mutations_created += 1
 
-        # 2. Crossover: pair top strategies and combine params
+        # 2. Crossover: pair top-2 strategies (1 child)
         crossovers_created = 0
         if len(top) >= 2:
-            pairs = [(top[i], top[i + 1]) for i in range(0, min(len(top) - 1, 4), 2)]
-            for parent_a, parent_b in pairs:
-                config_a = self._load_strategy_config(parent_a["id"])
-                config_b = self._load_strategy_config(parent_b["id"])
-                if config_a is None or config_b is None:
-                    continue
+            parent_a, parent_b = top[0], top[1]
+            config_a = self._load_strategy_config(parent_a["id"])
+            config_b = self._load_strategy_config(parent_b["id"])
+            if config_a is not None and config_b is not None:
                 child_params = self._crossover_params(config_a, config_b)
                 evo_id = self._next_evolution_id()
                 max_gen = max(parent_a.get("generation", 1), parent_b.get("generation", 1))
@@ -90,27 +130,32 @@ class EvolutionAgent(BaseAgent):
         """
         Select top strategies by composite score, using the latest backtest
         results. Returns list of dicts with strategy info + 'score' key.
+        Only includes strategies whose source files still exist.
         """
         rows = self.db.fetchall(
             "SELECT s.id, s.family, s.generation, s.file_path, "
             "s.best_win_rate, s.best_profit_factor, s.best_max_drawdown, "
             "s.best_x10_count, s.best_final_balance, s.best_config "
             "FROM strategies s "
-            "WHERE s.status NOT IN ('retired', 'deleted') "
+            "WHERE s.status NOT IN ('retired', 'deleted', 'rejected') "
             "AND s.best_profit_factor IS NOT NULL"
         )
 
         scored = []
         for r in rows:
+            entry = dict(r)
+            # Skip strategies with missing files
+            fp = entry.get("file_path")
+            if fp and not Path(fp).exists():
+                continue
             metrics = {
-                "win_rate": r["best_win_rate"] or 0.0,
-                "profit_factor": r["best_profit_factor"] or 0.0,
-                "max_drawdown": r["best_max_drawdown"] or 1.0,
-                "x10_count": r["best_x10_count"] or 0,
+                "win_rate": entry["best_win_rate"] or 0.0,
+                "profit_factor": entry["best_profit_factor"] or 0.0,
+                "max_drawdown": entry["best_max_drawdown"] or 1.0,
+                "x10_count": entry["best_x10_count"] or 0,
                 "total_trades": 1,  # non-zero so score isn't auto-zeroed
             }
             score = composite_score(metrics)
-            entry = dict(r)
             entry["score"] = score
             scored.append(entry)
 
@@ -296,7 +341,7 @@ class EvolutionAgent(BaseAgent):
     def _next_evolution_id(self) -> str:
         """Generate the next sequential evolved-strategy ID (E0001, E0002, …)."""
         row = self.db.fetchone(
-            "SELECT id FROM strategies WHERE id LIKE 'E%' ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM strategies WHERE id LIKE 'E%' AND id NOT LIKE 'ENS%' ORDER BY id DESC LIMIT 1"
         )
         if row:
             last_num = int(row["id"][1:])

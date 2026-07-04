@@ -1,4 +1,8 @@
-"""Thread-safe SQLite database wrapper for the multi-agent system."""
+"""Thread-safe SQLite database wrapper for the multi-agent system.
+
+Uses WAL mode with per-thread read connections for concurrent reads
+and a single serialized write connection.
+"""
 import sqlite3
 import threading
 from pathlib import Path
@@ -6,42 +10,71 @@ from typing import Any, Optional
 
 
 class Database:
-    """Thread-safe SQLite wrapper using WAL mode and a shared lock."""
+    """High-concurrency SQLite wrapper.
+
+    WAL mode allows concurrent readers. Each thread gets its own read
+    connection (via thread-local storage), while writes go through a
+    single serialized connection protected by a lock.
+    """
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            str(db_path),
+        self._write_lock = threading.Lock()
+        self._local = threading.local()
+
+        # Write connection (serialized)
+        self._write_conn = self._make_conn()
+        self._write_conn.execute("PRAGMA journal_mode=WAL")
+        self._write_conn.execute("PRAGMA synchronous=NORMAL")
+        self._write_conn.execute("PRAGMA busy_timeout=10000")
+
+    def _make_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            str(self.db_path),
             check_same_thread=False,
             timeout=30,
         )
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _get_read_conn(self) -> sqlite3.Connection:
+        """Get or create a per-thread read connection."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._make_conn()
+            self._local.conn = conn
+        return conn
+
+    def _is_write(self, sql: str) -> bool:
+        s = sql.strip().upper()
+        return s.startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "REPLACE"))
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute SQL with thread safety. Auto-commits writes."""
-        with self._lock:
-            cursor = self._conn.execute(sql, params)
-            if sql.strip().upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER")):
-                self._conn.commit()
-            return cursor
+        """Execute SQL. Writes are serialized; reads use per-thread connections."""
+        if self._is_write(sql):
+            with self._write_lock:
+                cursor = self._write_conn.execute(sql, params)
+                self._write_conn.commit()
+                return cursor
+        else:
+            return self._get_read_conn().execute(sql, params)
 
     def executemany(self, sql: str, params_list: list) -> sqlite3.Cursor:
-        """Execute SQL for multiple param sets."""
-        with self._lock:
-            cursor = self._conn.executemany(sql, params_list)
-            self._conn.commit()
+        """Execute SQL for multiple param sets (always a write)."""
+        with self._write_lock:
+            cursor = self._write_conn.executemany(sql, params_list)
+            self._write_conn.commit()
             return cursor
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
-        """Execute and fetch one row."""
-        return self.execute(sql, params).fetchone()
+        """Execute and fetch one row (read path)."""
+        return self._get_read_conn().execute(sql, params).fetchone()
 
     def fetchall(self, sql: str, params: tuple = ()) -> list:
-        """Execute and fetch all rows."""
-        return self.execute(sql, params).fetchall()
+        """Execute and fetch all rows (read path)."""
+        return self._get_read_conn().execute(sql, params).fetchall()
 
     def update_heartbeat(self, agent_id: str):
         """Update agent's last_heartbeat to now."""
@@ -52,13 +85,14 @@ class Database:
 
     def init_schema(self):
         """Create all tables if they don't exist."""
-        with self._lock:
-            self._conn.executescript(_SCHEMA_SQL)
+        with self._write_lock:
+            self._write_conn.executescript(_SCHEMA_SQL)
 
     def close(self):
-        """Close the database connection."""
-        with self._lock:
-            self._conn.close()
+        """Close all connections."""
+        with self._write_lock:
+            self._write_conn.close()
+        # Thread-local connections will be GC'd
 
 
 _SCHEMA_SQL = """
@@ -192,5 +226,42 @@ CREATE TABLE IF NOT EXISTS llm_queue (
     response TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS live_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    ticket INTEGER,
+    direction TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    sl REAL,
+    tp REAL,
+    lot REAL NOT NULL,
+    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMP,
+    close_price REAL,
+    pnl REAL,
+    pnl_pct REAL,
+    status TEXT DEFAULT 'open',
+    close_reason TEXT,
+    metadata JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_live_stats (
+    strategy_id TEXT PRIMARY KEY,
+    total_trades INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0,
+    total_pnl REAL DEFAULT 0.0,
+    best_pnl REAL DEFAULT 0.0,
+    worst_pnl REAL DEFAULT 0.0,
+    avg_pnl REAL DEFAULT 0.0,
+    live_win_rate REAL DEFAULT 0.0,
+    live_profit_factor REAL DEFAULT 0.0,
+    confidence_score REAL DEFAULT 50.0,
+    consecutive_losses INTEGER DEFAULT 0,
+    last_trade_at TIMESTAMP,
+    deployed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'active'
 );
 """

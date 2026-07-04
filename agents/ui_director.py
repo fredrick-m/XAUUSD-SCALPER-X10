@@ -33,11 +33,15 @@ class UIDirector(BaseAgent):
         if self._server_started:
             return
         try:
+            import os
             from dashboard.app import app
+            # 127.0.0.1 by default: the dashboard has no authentication and
+            # must never be exposed publicly (VPS!). Use RDP/SSH tunnel, or
+            # set DASHBOARD_HOST=0.0.0.0 only on a trusted private network.
             thread = threading.Thread(
                 target=app.run,
                 kwargs={
-                    "host": "0.0.0.0",
+                    "host": os.environ.get("DASHBOARD_HOST", "127.0.0.1"),
                     "port": DASHBOARD_PORT,
                     "debug": False,
                     "use_reloader": False,

@@ -111,21 +111,17 @@
   </div>
 </div>
 
-<!-- ROW 3: Strategy Decision Tree | PF Distribution -->
-<div class="grid-2" style="margin-bottom:8px;">
-
-  <!-- DECISION TREE -->
+<!-- ROW 3: Strategy Validation Flow (compact) + PF Distribution -->
+<div class="grid-2" style="margin-bottom:6px;">
   <div class="section">
-    <div class="section-title">STRATEGY VALIDATION FLOW · EVERY TRADE TRACED<span class="right" id="tree-inflight">IN-FLIGHT: --</span></div>
-    <div class="tree-container" id="tree-svg-wrap">
-      <svg viewBox="0 0 700 190" id="tree-svg"></svg>
+    <div class="section-title">STRATEGY VALIDATION FLOW<span class="right" id="tree-inflight">IN-FLIGHT: --</span></div>
+    <div class="tree-container" id="tree-svg-wrap" style="height:110px;overflow:hidden;">
+      <svg viewBox="0 0 700 140" id="tree-svg"></svg>
     </div>
   </div>
-
-  <!-- PF DISTRIBUTION -->
   <div class="section">
     <div class="section-title">PROFIT FACTOR DISTRIBUTION<span class="right" id="pf-dist-count">--</span></div>
-    <div class="chart-container">
+    <div class="chart-container" style="height:100px;">
       <canvas id="pf-chart"></canvas>
     </div>
   </div>
@@ -161,7 +157,7 @@
   <div class="section">
     <div class="section-title">MONTE CARLO · 10K PATHS<span class="right" id="mc-p">P = --</span></div>
     <div id="mc-panel">
-      <div class="chart-container" style="height:100px;">
+      <div class="chart-container" style="height:60px;">
         <canvas id="mc-chart"></canvas>
       </div>
       <div class="mc-stats" id="mc-stats">
@@ -176,70 +172,31 @@
   <!-- P&L GROWTH -->
   <div class="section">
     <div class="section-title">P&L GROWTH · ALL-TIME<span class="right" id="pnl-total">--</span></div>
-    <div class="chart-container" style="height:140px;">
+    <div class="chart-container" style="height:80px;">
       <canvas id="pnl-chart"></canvas>
     </div>
   </div>
 </div>
 
-<!-- ROW 5: System Timing -->
+<!-- SYSTEM TIMING (compact) -->
 <div class="section" style="margin-bottom:8px;">
   <div class="section-title">SYSTEM TIMING<span class="right" id="timing-elapsed">UPTIME: --</span></div>
-  <div class="stat-row" style="margin-bottom:8px;">
-    <div class="stat-item">
-      <span class="stat-label">BACKTESTS</span>
-      <span class="stat-value green" id="tm-bt-total">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 1H</span>
-      <span class="stat-value" id="tm-bt-1h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 6H</span>
-      <span class="stat-value" id="tm-bt-6h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 24H</span>
-      <span class="stat-value" id="tm-bt-24h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 7D</span>
-      <span class="stat-value" id="tm-bt-7d">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">RATE</span>
-      <span class="stat-value green" id="tm-rate">--/h</span>
-    </div>
+  <div class="stat-row">
+    <div class="stat-item"><span class="stat-label">BACKTESTS</span><span class="stat-value green" id="tm-bt-total">--</span></div>
+    <div class="stat-item"><span class="stat-label">1H</span><span class="stat-value" id="tm-bt-1h">--</span></div>
+    <div class="stat-item"><span class="stat-label">24H</span><span class="stat-value" id="tm-bt-24h">--</span></div>
+    <div class="stat-item"><span class="stat-label">RATE</span><span class="stat-value green" id="tm-rate">--/h</span></div>
+    <div class="stat-item"><span class="stat-label">STRATEGIES</span><span class="stat-value" id="tm-st-total">--</span></div>
+    <div class="stat-item"><span class="stat-label">EVENTS</span><span class="stat-value" id="tm-ev-total">--</span></div>
   </div>
-  <div class="stat-row" style="margin-bottom:8px;">
-    <div class="stat-item">
-      <span class="stat-label">STRATEGIES</span>
-      <span class="stat-value" id="tm-st-total">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 1H</span>
-      <span class="stat-value" id="tm-st-1h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 6H</span>
-      <span class="stat-value" id="tm-st-6h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 24H</span>
-      <span class="stat-value" id="tm-st-24h">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">LAST 7D</span>
-      <span class="stat-value" id="tm-st-7d">--</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">EVENTS</span>
-      <span class="stat-value" id="tm-ev-total">--</span>
-    </div>
-  </div>
-  <div class="chart-container" style="height:80px;">
-    <canvas id="timing-chart"></canvas>
-  </div>
+  <!-- Hidden spans for JS compatibility -->
+  <span id="tm-bt-6h" style="display:none;"></span>
+  <span id="tm-bt-7d" style="display:none;"></span>
+  <span id="tm-st-1h" style="display:none;"></span>
+  <span id="tm-st-6h" style="display:none;"></span>
+  <span id="tm-st-24h" style="display:none;"></span>
+  <span id="tm-st-7d" style="display:none;"></span>
+  <canvas id="timing-chart" style="display:none;"></canvas>
 </div>
 
 <!-- ROW 6: Live Trades -->
@@ -254,7 +211,7 @@
       <div class="stat-item"><span class="stat-label">POSITIONS</span><span class="stat-value green" id="tr-count">0</span></div>
     </div>
   </div>
-  <div style="max-height:200px;overflow-y:auto;" id="trades-table-wrap">
+  <div style="max-height:150px;overflow-y:auto;" id="trades-table-wrap">
     <table>
       <thead><tr>
         <th>TICKET</th><th>DIR</th><th>LOT</th><th>ENTRY</th><th>CURRENT</th><th>SL</th><th>TP</th><th>P&L</th><th>COMMENT</th>
@@ -264,30 +221,16 @@
       </tbody>
     </table>
   </div>
-  <div id="trades-history" style="margin-top:8px;font-size:9px;color:var(--text3);max-height:80px;overflow-y:auto;"></div>
+  <div id="trades-history" style="margin-top:8px;font-size:9px;color:var(--text3);max-height:50px;overflow-y:auto;"></div>
 </div>
 
-<!-- ROW 7: Top Strategies Table | Live Feed -->
-<div class="grid-2">
+<!-- Hidden elements for top-strategies JS compatibility -->
+<div id="top-table-wrap" style="display:none;"><table><tbody id="top-tbody"></tbody></table></div>
 
-  <!-- TOP STRATEGIES -->
-  <div class="section">
-    <div class="section-title">TOP STRATEGIES<span class="right">BY PROFIT FACTOR</span></div>
-    <div style="max-height:240px;overflow-y:auto;" id="top-table-wrap">
-      <table>
-        <thead><tr>
-          <th>ID</th><th>FAM</th><th>STATUS</th><th>PF</th><th>WR</th><th>DD</th><th>x10</th><th>REG</th><th>WF</th><th>MC</th><th>ROBUST</th>
-        </tr></thead>
-        <tbody id="top-tbody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- LIVE FEED -->
-  <div class="section">
-    <div class="section-title">LIVE FEED<span class="right">AUTO-REFRESH 3s</span></div>
-    <div class="feed-list" id="feed-list">loading...</div>
-  </div>
+<!-- LIVE FEED (compact) -->
+<div class="section" style="margin-bottom:8px;">
+  <div class="section-title">LIVE FEED<span class="right">AUTO-REFRESH 3s</span></div>
+  <div class="feed-list" id="feed-list" style="max-height:100px;overflow-y:auto;">loading...</div>
 </div>
 
 <script>
@@ -298,7 +241,6 @@
 let pfChart = null;
 let mcChart = null;
 let pnlChart = null;
-let timingChart = null;
 
 // ── SUMMARY (production + research + risk) ──────
 async function loadSummary() {
@@ -324,18 +266,20 @@ async function loadSummary() {
     document.getElementById('prod-rr').textContent = '2.0';
     document.getElementById('prod-risk').textContent = '4%';
 
-    // Production strategy list
+    // Production strategy list (top 5 + summary)
     const prodList = d.prod_strategies || [];
     if (prodList.length) {
-      const listHtml = prodList.map(s => {
-        return `<div style="padding:3px 0;border-bottom:1px solid var(--border-light);">
-          <span style="color:var(--green);font-weight:800;">${s.id}</span>
-          <span style="margin-left:6px;font-weight:600;">PF=${(s.best_profit_factor||0).toFixed(2)}</span>
-          <span style="margin-left:6px;">WR=${((s.best_win_rate||0)*100).toFixed(1)}%</span>
-          <span style="margin-left:6px;color:var(--gold);font-weight:700;">$${(s.best_final_balance||0).toFixed(0)}</span>
+      const top5 = prodList.slice(0, 5);
+      const listHtml = top5.map(s => {
+        const wf = s.walk_forward_passed ? '<span style="color:var(--green);">WF</span>' : '';
+        return `<div style="padding:2px 0;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;">
+          <span><span style="color:var(--green);font-weight:800;">${s.id}</span> ${wf}</span>
+          <span>PF=${(s.best_profit_factor||0).toFixed(2)} WR=${((s.best_win_rate||0)*100).toFixed(0)}%</span>
         </div>`;
       }).join('');
-      document.getElementById('prod-strat-list').innerHTML = listHtml;
+      const moreCount = prodList.length - 5;
+      const moreLine = moreCount > 0 ? `<div style="padding:2px 0;color:var(--text3);text-align:center;">+ ${moreCount} more strategies</div>` : '';
+      document.getElementById('prod-strat-list').innerHTML = listHtml + moreLine;
 
       const bestProd = prodList[0];
       if (bestProd && bestProd.mc_p_ruin != null) {
@@ -444,7 +388,7 @@ async function loadPipeline() {
   } catch(e) {}
 }
 
-// ── DECISION TREE SVG ────────────────────────────
+// ── DECISION TREE SVG (compact) ─────────────────
 async function loadTree() {
   try {
     const r = await fetch('/api/pipeline');
@@ -452,24 +396,20 @@ async function loadTree() {
     const svg = document.getElementById('tree-svg');
 
     const nodes = [
-      { id:'raw', x:20, y:80, w:70, h:36, label:'RAW', val:d.candidate+d.backtested, cls:'' },
-      { id:'bt', x:120, y:80, w:70, h:36, label:'BACKTEST', val:d.backtested, cls:'' },
-      { id:'wf', x:230, y:40, w:70, h:36, label:'WALK-FWD', val:d.wf_passed, cls:'' },
-      { id:'val', x:230, y:120, w:70, h:36, label:'REJECTED', val:d.backtested - d.wf_passed, cls:'', color:'var(--red)' },
-      { id:'vld', x:340, y:60, w:90, h:44, label:'VALIDATED', val:d.validated, cls:'highlight' },
-      { id:'reg', x:460, y:30, w:70, h:32, label:'REGIME', val:d.regime_passed, cls:'' },
-      { id:'mc', x:460, y:80, w:70, h:32, label:'M.CARLO', val:d.mc_tested, cls:'' },
-      { id:'sens', x:460, y:130, w:70, h:32, label:'SENSIT.', val:d.sensitivity_tested, cls:'' },
-      { id:'live', x:580, y:75, w:90, h:40, label:'PRODUCTION', val:d.mtf_tested, cls:'success' },
+      { id:'raw', x:20, y:50, w:65, h:32, label:'RAW', val:d.candidate+d.backtested },
+      { id:'bt', x:110, y:50, w:65, h:32, label:'BACKTEST', val:d.backtested },
+      { id:'wf', x:205, y:20, w:65, h:32, label:'WALK-FWD', val:d.wf_passed },
+      { id:'val', x:205, y:90, w:65, h:32, label:'REJECTED', val:d.backtested - d.wf_passed, color:'var(--red)' },
+      { id:'vld', x:305, y:40, w:80, h:38, label:'VALIDATED', val:d.validated, cls:'highlight' },
+      { id:'reg', x:420, y:10, w:65, h:28, label:'REGIME', val:d.regime_passed },
+      { id:'mc', x:420, y:50, w:65, h:28, label:'M.CARLO', val:d.mc_tested },
+      { id:'sens', x:420, y:90, w:65, h:28, label:'SENSIT.', val:d.sensitivity_tested },
+      { id:'live', x:530, y:45, w:85, h:36, label:'PRODUCTION', val:d.mtf_tested, cls:'success' },
     ];
 
     const edges = [
-      { from:'raw', to:'bt' },
-      { from:'bt', to:'wf' },
-      { from:'bt', to:'val' },
-      { from:'wf', to:'vld' },
-      { from:'vld', to:'reg' },
-      { from:'vld', to:'mc' },
+      { from:'raw', to:'bt' }, { from:'bt', to:'wf' }, { from:'bt', to:'val' },
+      { from:'wf', to:'vld' }, { from:'vld', to:'reg' }, { from:'vld', to:'mc' },
       { from:'vld', to:'sens' },
       { from:'reg', to:'live', cls: d.regime_passed > 0 ? 'active' : '' },
       { from:'mc', to:'live', cls: d.mc_tested > 0 ? 'active' : '' },
@@ -477,99 +417,52 @@ async function loadTree() {
     ];
 
     let html = '';
-
-    // Draw edges
     for (const e of edges) {
       const f = nodes.find(n => n.id === e.from);
       const t = nodes.find(n => n.id === e.to);
-      const x1 = f.x + f.w;
-      const y1 = f.y + f.h/2;
-      const x2 = t.x;
-      const y2 = t.y + t.h/2;
+      const x1 = f.x + f.w, y1 = f.y + f.h/2;
+      const x2 = t.x, y2 = t.y + t.h/2;
       const mx = (x1 + x2) / 2;
       html += `<path class="tree-edge ${e.cls||''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
     }
-
-    // Draw nodes
     for (const n of nodes) {
       const valColor = n.color || 'var(--text)';
-      html += `<g class="tree-node ${n.cls}">
+      html += `<g class="tree-node ${n.cls||''}">
         <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}"/>
-        <text x="${n.x+n.w/2}" y="${n.y+14}" style="font-size:7px;">${n.label}</text>
-        <text x="${n.x+n.w/2}" y="${n.y+n.h-6}" class="node-val" style="fill:${valColor};">${n.val}</text>
+        <text x="${n.x+n.w/2}" y="${n.y+12}" style="font-size:7px;">${n.label}</text>
+        <text x="${n.x+n.w/2}" y="${n.y+n.h-5}" class="node-val" style="fill:${valColor};">${n.val}</text>
       </g>`;
     }
-
     svg.innerHTML = html;
   } catch(e) {}
 }
 
-// ── TOP STRATEGIES TABLE ─────────────────────────
-async function loadTop() {
-  try {
-    const r = await fetch('/api/top');
-    const strategies = await r.json();
-    const tbody = document.getElementById('top-tbody');
-
-    if (!strategies.length) {
-      tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text3);text-align:center;">No strategies yet</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = strategies.map(s => {
-      const pf = (s.best_profit_factor||0).toFixed(2);
-      const wr = ((s.best_win_rate||0)*100).toFixed(1);
-      const dd = ((s.best_max_drawdown||0)*100).toFixed(1);
-      const pfCls = pf >= 2.0 ? 't-green' : (pf >= 1.0 ? 't-gold' : 't-red');
-      const wrCls = wr >= 62 ? 't-green' : (wr >= 50 ? 't-gold' : 't-red');
-      const mcRuin = s.mc_p_ruin != null ? (s.mc_p_ruin*100).toFixed(1)+'%' : '-';
-      const robust = s.robustness != null ? s.robustness.toFixed(2) : '-';
-
-      return `<tr>
-        <td class="t-blue">${s.id}</td>
-        <td>${s.family||'-'}</td>
-        <td style="color:${s.status==='validated'?'var(--green)':s.status==='fragile'?'var(--red)':'var(--text3)'};">${s.status}</td>
-        <td class="${pfCls}">${pf}</td>
-        <td class="${wrCls}">${wr}%</td>
-        <td class="t-red">${dd}%</td>
-        <td class="t-gold">${s.best_x10_count||0}</td>
-        <td>${s.regimes_passed||0}/3</td>
-        <td>${s.walk_forward_passed?'✓':'-'}</td>
-        <td>${mcRuin}</td>
-        <td>${robust}</td>
-      </tr>`;
-    }).join('');
-  } catch(e) {}
-}
+// ── TOP STRATEGIES TABLE (kept in Strategies tab) ──
+async function loadTop() { /* no-op — use Strategies tab */ }
 
 // ── PF DISTRIBUTION CHART ────────────────────────
 async function loadPfDist() {
   try {
     const r = await fetch('/api/pf-distribution');
     const d = await r.json();
-    document.getElementById('pf-dist-count').textContent = d.total + ' STRATEGIES';
-
     const ctx = document.getElementById('pf-chart').getContext('2d');
     if (pfChart) pfChart.destroy();
 
-    const colors = d.labels.map(l => l >= 2.0 ? '#1a8a40' : l >= 1.0 ? '#c8a000' : '#c0392b');
+    document.getElementById('pf-dist-count').textContent = d.total + ' STRATEGIES';
+
+    const colors = d.labels.map(l => l >= 1.3 ? 'rgba(26,138,64,0.7)' : l >= 1.0 ? 'rgba(200,160,0,0.6)' : 'rgba(192,57,43,0.5)');
 
     pfChart = new Chart(ctx, {
       type: 'bar',
       data: {
         labels: d.labels.map(l => l.toFixed(1)),
-        datasets: [{
-          data: d.counts,
-          backgroundColor: colors,
-          borderWidth: 0,
-          borderRadius: 2,
-        }]
+        datasets: [{ data: d.counts, backgroundColor: colors, borderWidth: 0 }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { grid: { display: false }, ticks: { font: { size: 8, family: 'JetBrains Mono' }, color: '#999' } },
+          x: { grid: { display: false }, ticks: { font: { size: 7 }, color: '#999', maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } },
           y: { grid: { color: '#e8e4db' }, ticks: { font: { size: 8 }, color: '#999' } },
         }
       }
@@ -753,7 +646,7 @@ async function loadFeed() {
       return;
     }
 
-    wrap.innerHTML = events.map(e => {
+    wrap.innerHTML = events.slice(0, 6).map(e => {
       const time = (e.timestamp || '').substring(11, 19);
       const typeCls = {
         milestone: 'ft-milestone', warning: 'ft-warning', error: 'ft-error',
@@ -791,39 +684,7 @@ async function loadTiming() {
     document.getElementById('tm-st-7d').textContent = d.strategies_7d;
     document.getElementById('tm-ev-total').textContent = d.events_total;
 
-    // Hourly bar chart
-    const buckets = d.hourly_buckets || [];
-    const ctx = document.getElementById('timing-chart').getContext('2d');
-    if (timingChart) timingChart.destroy();
-
-    timingChart = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: buckets.map(b => b.label),
-        datasets: [{
-          data: buckets.map(b => b.count),
-          backgroundColor: buckets.map(b => b.count > 0 ? '#1a8a40' : '#e8e4db'),
-          borderWidth: 0,
-          borderRadius: 2,
-        }]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              title: (items) => items[0].label,
-              label: (item) => item.raw + ' backtests',
-            }
-          }
-        },
-        scales: {
-          x: { grid: { display: false }, ticks: { font: { size: 7, family: 'JetBrains Mono' }, color: '#999', maxRotation: 0 } },
-          y: { grid: { color: '#e8e4db' }, ticks: { font: { size: 7 }, color: '#999', stepSize: 1 } },
-        }
-      }
-    });
+    // Timing chart removed for compact layout
   } catch(e) { console.error('timing error', e); }
 }
 
@@ -960,8 +821,8 @@ function connectSSE() {
             <span class="feed-msg">${msg}</span>
           </div>`;
           wrap.insertAdjacentHTML('afterbegin', html);
-          // Keep max 30 items
-          while (wrap.children.length > 30) wrap.removeChild(wrap.lastChild);
+          // Keep max 8 items
+          while (wrap.children.length > 8) wrap.removeChild(wrap.lastChild);
         }
         // Refresh summary on milestones
         if (d.event_type === 'milestone' || d.event_type === 'strategy_validated') {

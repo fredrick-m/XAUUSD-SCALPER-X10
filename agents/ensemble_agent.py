@@ -326,7 +326,7 @@ class EnsembleAgent(BaseAgent):
             pass
 
         # Validate
-        passed, fails = validate(metrics, regimes_tested=regimes_tested)
+        passed, fails = validate(metrics, regimes_tested=regimes_tested, timeframe="M5")
         if not passed:
             self.logger.info(
                 f"Ensemble {method} ({len(component_ids)} components) did not pass: {fails}"

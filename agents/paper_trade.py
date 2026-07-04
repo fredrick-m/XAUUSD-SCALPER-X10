@@ -1,11 +1,12 @@
-"""Paper Trade Agent: connects to MT5 demo account for live strategy validation."""
+"""Paper Trade Agent: deploys ALL validated strategies on MT5 demo account."""
 import json
 import traceback
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 from agents.base_agent import BaseAgent
-from agents.risk_manager import is_trading_allowed, get_position_scaling, get_max_open_trades
+from agents.signal_gatekeeper import gate_check, get_confidence_scaling
 
 try:
     import MetaTrader5 as mt5
@@ -15,17 +16,17 @@ except ImportError:
 
 
 SYMBOL = "XAUUSD"
-TIMEFRAME_M1 = 1  # mt5.TIMEFRAME_M1
 MAGIC_NUMBER = 424242
-MAX_BARS_LOOKBACK = 500
+M5_BARS_LOOKBACK = 5000
 
 
 class PaperTradeAgent(BaseAgent):
     """
-    Executes validated strategies on MT5 demo account for live validation.
+    Deploys ALL validated+WF strategies on MT5 demo.
 
-    Compares live results against backtest expectations to detect drift.
-    Requires MetaTrader5 Python package and a running MT5 terminal.
+    Each strategy runs independently, watching for its own signals.
+    The Signal Gatekeeper enforces strict pre-trade filters.
+    All positions are persisted to live_trades table (survives restarts).
     """
 
     name = "paper_trade"
@@ -34,8 +35,9 @@ class PaperTradeAgent(BaseAgent):
         super().__init__(agent_id="paper_trade", db=db)
         self._mt5_connected = False
         self._active_strategies: list = []
-        self._open_positions: dict = {}  # strategy_id -> position info
-        self._trade_log: list = []
+        self._reload_counter = 0
+        self._last_m5_bar_time = None  # avoid re-processing same bar
+        self._module_cache: dict = {}  # strategy_id -> (module, load_time)
 
     # ──────────────────────────────────────────────────
     # BaseAgent interface
@@ -51,8 +53,9 @@ class PaperTradeAgent(BaseAgent):
             self.emit_event("warning", "MT5 not installed — paper trade agent in dry-run mode")
         else:
             self._connect_mt5()
+            if self._mt5_connected:
+                self._reconcile_positions()
 
-        # Load validated strategies for paper trading
         self._load_active_strategies()
         self.logger.info(
             f"Paper Trade Agent ready — {len(self._active_strategies)} strategies, "
@@ -60,21 +63,32 @@ class PaperTradeAgent(BaseAgent):
         )
 
     def tick(self):
-        """Main tick: check signals, manage positions, log results."""
-        if not self._active_strategies:
+        """Main tick: reload strategies, check signals, manage positions."""
+        # Reload strategies every 10 ticks to pick up newly validated ones
+        self._reload_counter += 1
+        if not self._active_strategies or self._reload_counter >= 10:
+            self._reload_counter = 0
+            old_ids = {s["id"] for s in self._active_strategies}
             self._load_active_strategies()
+            new_ids = {s["id"] for s in self._active_strategies}
+            added = new_ids - old_ids
+            if added:
+                self.emit_event("milestone", f"New strategies deployed: {added}")
+                self._register_new_strategies(added)
             if not self._active_strategies:
                 return
-
-        # Check risk manager
-        if not is_trading_allowed(self.db):
-            self.logger.info("Trading paused by risk manager — skipping tick")
-            return
 
         if self._mt5_connected:
             self._tick_live()
         else:
-            self._tick_dry_run()
+            if MT5_AVAILABLE:
+                self._connect_mt5()
+                if self._mt5_connected:
+                    self._reconcile_positions()
+            if self._mt5_connected:
+                self._tick_live()
+            else:
+                self._tick_dry_run()
 
     def tick_interval(self) -> float:
         return self.get_config("tick_interval", 60)
@@ -102,11 +116,11 @@ class PaperTradeAgent(BaseAgent):
                 self.logger.error("No MT5 account info available")
                 return
 
-            # Verify it's a demo account
+            # SAFETY: refuse to trade on live accounts
             if account_info.trade_mode != 0:  # 0 = demo
                 self.logger.warning(
                     f"MT5 account is NOT demo (mode={account_info.trade_mode}). "
-                    "Refusing to paper trade on a live account."
+                    "Refusing to trade on a live account."
                 )
                 self.emit_event(
                     "error",
@@ -126,55 +140,200 @@ class PaperTradeAgent(BaseAgent):
             self.logger.error(f"MT5 connection failed: {exc}")
 
     # ──────────────────────────────────────────────────
-    # Strategy loading
+    # Position reconciliation on startup
     # ──────────────────────────────────────────────────
 
-    def _load_active_strategies(self):
-        """Load validated strategies that passed walk-forward and are not fragile."""
-        rows = self.db.fetchall(
-            "SELECT id, file_path, best_config, best_profit_factor, best_win_rate "
-            "FROM strategies "
-            "WHERE status = 'validated' AND walk_forward_passed = 1 "
-            "ORDER BY best_profit_factor DESC "
-            "LIMIT 10"
+    def _reconcile_positions(self):
+        """
+        On startup, sync DB live_trades with actual MT5 positions.
+        Handles trades opened before restart.
+        """
+        if not MT5_AVAILABLE or not self._mt5_connected:
+            return
+
+        # Get MT5 positions with our magic number
+        positions = mt5.positions_get(symbol=SYMBOL)
+        if positions is None:
+            # MT5 call FAILED (None != empty). Do not touch the DB based on
+            # an error — a transient failure here used to mark every open
+            # trade as closed with no P&L.
+            self.logger.warning(f"positions_get failed during reconcile: {mt5.last_error()}")
+            return
+
+        mt5_tickets = set()
+        for pos in positions:
+            if pos.magic != MAGIC_NUMBER:
+                continue
+            mt5_tickets.add(pos.ticket)
+
+            # Check if this position exists in our DB
+            row = self.db.fetchone(
+                "SELECT id FROM live_trades WHERE ticket = ? AND status = 'open'",
+                (pos.ticket,),
+            )
+            if not row:
+                # MT5 has a position we don't know about — record it
+                strategy_id = pos.comment.replace("PT_", "") if pos.comment else "UNKNOWN"
+                direction = "buy" if pos.type == 0 else "sell"
+                self.db.execute(
+                    "INSERT INTO live_trades "
+                    "(strategy_id, ticket, direction, entry_price, sl, tp, lot, "
+                    "opened_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+                    (strategy_id, pos.ticket, direction, pos.price_open,
+                     pos.sl, pos.tp, pos.volume,
+                     datetime.now(timezone.utc).isoformat()),
+                )
+                self.logger.info(f"Reconciled orphan position: ticket={pos.ticket}")
+
+        # Close DB trades that no longer exist in MT5, backfilling the real
+        # P&L from deal history so live stats stay accurate.
+        db_open = self.db.fetchall(
+            "SELECT id, ticket FROM live_trades WHERE status = 'open'"
         )
+        for row in db_open:
+            if row["ticket"] and row["ticket"] not in mt5_tickets:
+                pnl = None
+                close_price = None
+                deals = mt5.history_deals_get(position=row["ticket"])
+                if deals:
+                    pnl = sum(
+                        d.profit
+                        + getattr(d, "swap", 0.0)
+                        + getattr(d, "commission", 0.0)
+                        + getattr(d, "fee", 0.0)
+                        for d in deals
+                    )
+                    if len(deals) > 1:
+                        close_price = deals[-1].price
+                self.db.execute(
+                    "UPDATE live_trades SET status = 'closed', "
+                    "close_reason = 'reconcile_mt5_closed', "
+                    "closed_at = ?, pnl = ?, close_price = ? WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), pnl, close_price,
+                     row["id"]),
+                )
+
+        self.logger.info(
+            f"Position reconciliation: {len(mt5_tickets)} MT5 positions, "
+            f"{len(db_open)} DB open trades"
+        )
+
+    # ──────────────────────────────────────────────────
+    # Strategy loading — ALL validated+WF, no limit
+    # ──────────────────────────────────────────────────
+
+    def _bad_families(self) -> set:
+        """Families with enough tested variants and a poor success ratio.
+
+        One variant passing thresholds means little when thousands are
+        generated (multiple-testing bias). If a family has FAMILY_MIN_TESTED+
+        variants with real samples and fewer than FAMILY_MIN_GOOD_RATIO of
+        them show PF >= 1.1, its 'winners' are treated as lucky noise.
+        """
+        from core.config import FAMILY_MIN_TESTED, FAMILY_MIN_GOOD_RATIO
+
+        rows = self.db.fetchall(
+            "SELECT s.family, COUNT(*) AS n_tested, "
+            "SUM(CASE WHEN v.best_pf >= 1.1 THEN 1 ELSE 0 END) AS n_good "
+            "FROM (SELECT strategy_id, MAX(profit_factor) AS best_pf "
+            "      FROM backtest_results WHERE total_trades >= 100 "
+            "      GROUP BY strategy_id) v "
+            "JOIN strategies s ON s.id = v.strategy_id "
+            "WHERE s.family IS NOT NULL "
+            "GROUP BY s.family"
+        )
+        bad = set()
+        for r in rows:
+            n_tested = r["n_tested"] or 0
+            n_good = r["n_good"] or 0
+            if n_tested >= FAMILY_MIN_TESTED and (n_good / n_tested) < FAMILY_MIN_GOOD_RATIO:
+                bad.add(r["family"])
+        return bad
+
+    def _load_active_strategies(self):
+        """Load ALL validated strategies that passed walk-forward + holdout."""
+        rows = self.db.fetchall(
+            "SELECT s.id, s.file_path, s.family, s.best_config, s.best_profit_factor, "
+            "s.best_win_rate, s.best_max_drawdown "
+            "FROM strategies s "
+            "WHERE s.status = 'validated' AND s.walk_forward_passed = 1 "
+            "ORDER BY s.best_profit_factor DESC"
+        )
+        bad_families = self._bad_families() if rows else set()
+        skipped_family = 0
         self._active_strategies = []
         for row in rows:
             config = {}
             if row["best_config"]:
-                config = (
-                    json.loads(row["best_config"])
-                    if isinstance(row["best_config"], str)
-                    else row["best_config"]
-                )
-            # Skip fragile strategies
+                try:
+                    config = (
+                        json.loads(row["best_config"])
+                        if isinstance(row["best_config"], str)
+                        else row["best_config"]
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Family robustness gate — EXCEPT probation strategies: they
+            # carry individual proof (stricter bars + holdout) and already
+            # trade at quarter size with live graduation/suspension. The
+            # gate exists to block ordinary passers from noisy families,
+            # not the system's designated controlled experiments.
+            if (row["family"] and row["family"] in bad_families
+                    and not config.get("probation")):
+                skipped_family += 1
+                continue
+
+            # Skip fragile strategies (Monte Carlo ruin > 10%)
             if config.get("monte_carlo", {}).get("p_ruin", 0) > 0.10:
                 continue
+            # Skip sensitivity-fragile strategies
             if config.get("sensitivity", {}).get("is_fragile", False):
+                continue
+
+            # Check if strategy is suspended by trade_supervisor
+            live_stat = self.db.fetchone(
+                "SELECT status FROM strategy_live_stats WHERE strategy_id = ?",
+                (row["id"],),
+            )
+            if live_stat and live_stat["status"] == "suspended":
                 continue
 
             self._active_strategies.append(dict(row))
 
-        if self._active_strategies:
+        if self._active_strategies or skipped_family:
             ids = [s["id"] for s in self._active_strategies]
-            self.logger.info(f"Active strategies for paper trading: {ids}")
+            self.logger.info(
+                f"Active strategies: {len(ids)} deployed "
+                f"(top 5: {ids[:5]}), {skipped_family} skipped by family gate"
+            )
+
+    def _register_new_strategies(self, new_ids: set):
+        """Register new strategies in strategy_live_stats."""
+        for sid in new_ids:
+            self.db.execute(
+                "INSERT OR IGNORE INTO strategy_live_stats "
+                "(strategy_id, confidence_score, deployed_at) "
+                "VALUES (?, 50.0, ?)",
+                (sid, datetime.now(timezone.utc).isoformat()),
+            )
 
     # ──────────────────────────────────────────────────
-    # Live tick (MT5 connected)
+    # Live tick — all strategies check signals
     # ──────────────────────────────────────────────────
 
     def _tick_live(self):
-        """Execute signals on MT5 demo account."""
+        """Execute signals on MT5 demo — all strategies in parallel."""
         import importlib.util
         import pandas as pd
         import numpy as np
-        from pathlib import Path
-        from core.config import STRATEGIES_DIR
 
-        # Get M1 bars and resample to M5 (all validated strategies are M5)
-        rates = mt5.copy_rates_from_pos(SYMBOL, mt5.TIMEFRAME_M1, 0, MAX_BARS_LOOKBACK)
+        # Get M5 bars from MT5. Start at position 1 to EXCLUDE the currently
+        # forming bar: signals must only be computed on closed bars, exactly
+        # like the backtest (otherwise signals repaint mid-bar).
+        rates = mt5.copy_rates_from_pos(SYMBOL, mt5.TIMEFRAME_M5, 1, M5_BARS_LOOKBACK)
         if rates is None or len(rates) < 100:
-            self.logger.warning("Could not fetch M1 bars from MT5")
+            self.logger.warning("Could not fetch M5 bars from MT5")
             return
 
         df = pd.DataFrame(rates)
@@ -184,31 +343,38 @@ class PaperTradeAgent(BaseAgent):
             "close": "Close", "tick_volume": "Volume",
         })
 
-        # Resample to M5 — all validated strategies are M5-optimized
-        df = df.set_index("time")
-        df = df.resample("5min").agg({
-            "Open": "first", "High": "max", "Low": "min",
-            "Close": "last", "Volume": "sum",
-        }).dropna().reset_index()
+        # Skip if same last-closed M5 bar as last tick (avoid duplicate signals)
+        last_bar_time = df["time"].iloc[-1]
+        if self._last_m5_bar_time == last_bar_time:
+            return
+        self._last_m5_bar_time = last_bar_time
 
-        scaling = get_position_scaling(self.db)
-        max_trades = get_max_open_trades(self.db)
-        current_open = len(self._open_positions)
+        self.logger.info(
+            f"Scanning {len(df)} closed M5 bars, "
+            f"last={df['time'].iloc[-1]}, close={df['Close'].iloc[-1]:.2f}"
+        )
 
+        # Get account info for gatekeeper
+        account = mt5.account_info()
+        if not account:
+            return
+
+        # Pre-fetch open trades in one query (avoid per-strategy DB calls)
+        open_trades_rows = self.db.fetchall(
+            "SELECT strategy_id FROM live_trades WHERE status = 'open'"
+        )
+        open_trade_ids = {r["strategy_id"] for r in open_trades_rows}
+
+        signals_found = 0
         for strat in self._active_strategies:
             strategy_id = strat["id"]
 
-            # Skip if already has an open position
-            if strategy_id in self._open_positions:
-                self._check_exit(strategy_id, df)
+            # Check if strategy already has an open trade (from pre-fetched set)
+            if strategy_id in open_trade_ids:
                 continue
 
-            # Skip if at max trades
-            if current_open >= max_trades:
-                continue
-
-            # Load strategy and generate signal
-            module = self._load_strategy_module(strategy_id)
+            # Load strategy module and generate signal
+            module = self._load_strategy_module(strategy_id, strat.get("file_path"))
             if module is None:
                 continue
 
@@ -218,19 +384,68 @@ class PaperTradeAgent(BaseAgent):
                 if "signal" not in result_df.columns:
                     continue
 
-                last_signal = result_df["signal"].iloc[-1]
+                # Only act on a signal from the LAST closed bar. A signal from
+                # an older bar is stale: the backtest enters at the open of the
+                # bar right after the signal, so executing hours later at
+                # market price would trade something never backtested.
+                last_signal = int(result_df["signal"].iloc[-1])
                 if last_signal == 0:
                     continue
 
-                # Place order on MT5
-                self._place_order(strategy_id, last_signal, df, params, scaling)
-                current_open += 1
+                # Session guard: the backtest only enters inside the
+                # strategy's session — live must do the same or it trades
+                # hours that were never validated.
+                sess_start = int(params.get("session_start", 7))
+                sess_end = int(params.get("session_end", 21))
+                bar_hour = int(df["time"].iloc[-1].hour)
+                if not (sess_start <= bar_hour < sess_end):
+                    continue
+
+                signals_found += 1
+
+                # Calculate order parameters
+                direction = "buy" if last_signal == 1 else "sell"
+                order_params = self._calculate_order_params(
+                    direction, df, params, account
+                )
+                if order_params is None:
+                    continue
+
+                # ── GATEKEEPER CHECK ──
+                allowed, reason = gate_check(
+                    self.db,
+                    strategy_id=strategy_id,
+                    direction=direction,
+                    lot=order_params["lot"],
+                    sl_distance=order_params["sl_distance"],
+                    account_balance=account.balance,
+                    account_equity=account.equity,
+                    free_margin=account.margin_free,
+                )
+
+                if not allowed:
+                    self.logger.info(f"Signal {strategy_id} {direction} BLOCKED by gatekeeper: {reason}")
+                    continue
+
+                # ── PLACE ORDER ──
+                self._place_order(strategy_id, direction, order_params)
 
             except Exception as exc:
-                self.logger.error(f"Signal gen failed for {strategy_id}: {exc}")
+                self.logger.error(
+                    f"Signal gen failed for {strategy_id}: {exc}\n"
+                    f"{traceback.format_exc()}"
+                )
 
-    def _place_order(self, strategy_id: str, signal: int, df, params: dict, scaling: float):
-        """Place a market order on MT5 demo."""
+        if signals_found > 0:
+            self.logger.info(f"SIGNALS FOUND: {signals_found} on this scan")
+        else:
+            self.logger.info(
+                f"Scan complete: {len(self._active_strategies)} strategies, 0 signals"
+            )
+
+    def _calculate_order_params(self, direction: str, df, params: dict,
+                                account) -> Optional[dict]:
+        """Calculate SL, TP, lot size for an order."""
         import ta
         from core.config import DEFAULT_RISK_PCT, PIP_VALUE, MIN_LOT, MAX_LOT
 
@@ -239,111 +454,108 @@ class PaperTradeAgent(BaseAgent):
 
         tick = mt5.symbol_info_tick(SYMBOL)
         if tick is None:
-            return
+            return None
 
-        # Proper ATR calculation
+        # ATR calculation
         atr_series = ta.volatility.average_true_range(
             df["High"], df["Low"], df["Close"], window=14
         )
         atr_val = atr_series.iloc[-1]
         if atr_val <= 0 or atr_val != atr_val:  # NaN check
-            return
+            return None
 
-        if signal == 1:
+        if direction == "buy":
             price = tick.ask
             sl = price - sl_atr * atr_val
             tp = price + tp_atr * atr_val
-            order_type = mt5.ORDER_TYPE_BUY
         else:
             price = tick.bid
             sl = price + sl_atr * atr_val
             tp = price - tp_atr * atr_val
-            order_type = mt5.ORDER_TYPE_SELL
 
-        # Dynamic lot sizing: risk % of account balance
-        account = mt5.account_info()
-        balance = account.balance if account else 50.0
         sl_distance = abs(price - sl)
         if sl_distance <= 0:
-            return
-        lot = (balance * DEFAULT_RISK_PCT) / (sl_distance * PIP_VALUE) * scaling
+            return None
+
+        # Dynamic lot sizing (confidence scaling is applied in _place_order)
+        base_lot = (account.balance * DEFAULT_RISK_PCT) / (sl_distance * PIP_VALUE)
+
+        # Get risk manager scaling (loss streak reduction)
+        from agents.risk_manager import get_position_scaling
+        risk_scaling = get_position_scaling(self.db)
+
+        lot = base_lot * risk_scaling
         lot = max(MIN_LOT, min(MAX_LOT, round(lot, 2)))
+
+        return {
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "sl_distance": sl_distance,
+            "lot": lot,
+            "atr": atr_val,
+            "order_type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
+        }
+
+    def _place_order(self, strategy_id: str, direction: str, params: dict):
+        """Place a market order on MT5 and persist to live_trades."""
+        # Apply confidence scaling to lot (never below broker minimum)
+        from core.config import MIN_LOT
+        conf_scale = get_confidence_scaling(self.db, strategy_id)
+        lot = max(MIN_LOT, round(params["lot"] * conf_scale, 2))
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": SYMBOL,
             "volume": lot,
-            "type": order_type,
-            "price": price,
-            "sl": sl,
-            "tp": tp,
+            "type": params["order_type"],
+            "price": params["price"],
+            "sl": params["sl"],
+            "tp": params["tp"],
             "deviation": 20,
             "magic": MAGIC_NUMBER,
             "comment": f"PT_{strategy_id}",
             "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            self._open_positions[strategy_id] = {
-                "ticket": result.order,
-                "type": "buy" if signal == 1 else "sell",
-                "price": price,
-                "sl": sl,
-                "tp": tp,
-                "lot": lot,
-                "opened_at": datetime.now(timezone.utc).isoformat(),
-            }
+            now = datetime.now(timezone.utc).isoformat()
+
+            # Persist to live_trades table
+            self.db.execute(
+                "INSERT INTO live_trades "
+                "(strategy_id, ticket, direction, entry_price, sl, tp, lot, "
+                "opened_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+                (strategy_id, result.order, direction, params["price"],
+                 params["sl"], params["tp"], lot, now),
+            )
+
             self.emit_event(
                 "trade_open",
-                f"Paper trade opened: {strategy_id} {'BUY' if signal == 1 else 'SELL'} "
-                f"@ {price:.2f}, SL={sl:.2f}, TP={tp:.2f}",
+                f"TRADE OPENED: {strategy_id} {direction.upper()} "
+                f"@ {params['price']:.2f}, SL={params['sl']:.2f}, "
+                f"TP={params['tp']:.2f}, lot={lot}",
                 metadata={
                     "strategy_id": strategy_id,
-                    "direction": "buy" if signal == 1 else "sell",
-                    "price": price, "sl": sl, "tp": tp, "lot": lot,
+                    "direction": direction,
+                    "price": params["price"],
+                    "sl": params["sl"],
+                    "tp": params["tp"],
+                    "lot": lot,
+                    "ticket": result.order,
+                    "confidence_scaling": conf_scale,
                 },
+            )
+            self.logger.info(
+                f"Trade opened: {strategy_id} {direction.upper()} "
+                f"@ {params['price']:.2f} lot={lot} (conf={conf_scale:.0%})"
             )
         else:
             error = result.comment if result else "unknown"
             self.logger.error(f"Order failed for {strategy_id}: {error}")
-
-    def _check_exit(self, strategy_id: str, df):
-        """Check if an open position has been closed by MT5."""
-        pos_info = self._open_positions.get(strategy_id)
-        if not pos_info:
-            return
-
-        # Check if position still exists
-        positions = mt5.positions_get(ticket=pos_info["ticket"])
-        if not positions:
-            # Position closed (by SL/TP or manually)
-            # Get deal history for P&L
-            deals = mt5.history_deals_get(
-                position=pos_info["ticket"]
-            )
-            pnl = 0.0
-            if deals:
-                pnl = sum(d.profit for d in deals)
-
-            self._log_trade_result(strategy_id, pos_info, pnl)
-            del self._open_positions[strategy_id]
-
-    def _log_trade_result(self, strategy_id: str, pos_info: dict, pnl: float):
-        """Log a completed trade."""
-        self.emit_event(
-            "trade_close",
-            f"Paper trade closed: {strategy_id} P&L={pnl:.2f}",
-            metadata={
-                "strategy_id": strategy_id,
-                "pnl": pnl,
-                "pnl_pct": pnl / 50.0,  # approximate % of initial balance
-                "direction": pos_info.get("type"),
-                "entry_price": pos_info.get("price"),
-                "opened_at": pos_info.get("opened_at"),
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
 
     # ──────────────────────────────────────────────────
     # Dry-run tick (no MT5)
@@ -351,7 +563,6 @@ class PaperTradeAgent(BaseAgent):
 
     def _tick_dry_run(self):
         """Log what would happen without actually placing trades."""
-        # Just report status
         strat_count = len(self._active_strategies)
         if strat_count > 0:
             ids = [s["id"] for s in self._active_strategies[:5]]
@@ -361,21 +572,36 @@ class PaperTradeAgent(BaseAgent):
             )
 
     # ──────────────────────────────────────────────────
-    # Strategy module loading
+    # Strategy module loading (with caching)
     # ──────────────────────────────────────────────────
 
-    def _load_strategy_module(self, strategy_id: str):
+    def _load_strategy_module(self, strategy_id: str, file_path: str = None):
+        """Load a strategy module with caching (reload every 100 ticks)."""
         import importlib.util
-        from pathlib import Path
-        from core.config import STRATEGIES_DIR
+        from core.config import STRATEGIES_DIR, DATA_DIR
 
-        row = self.db.fetchone("SELECT file_path FROM strategies WHERE id = ?", (strategy_id,))
+        # Check cache
+        cached = self._module_cache.get(strategy_id)
+        if cached:
+            module, load_count = cached
+            if load_count < 100:
+                self._module_cache[strategy_id] = (module, load_count + 1)
+                return module
+
+        # Use provided file_path to avoid DB query
         candidate_paths = []
-        if row and row["file_path"]:
-            db_path = Path(row["file_path"])
+        if file_path:
+            db_path = Path(file_path)
             candidate_paths.append(db_path)
-            from core.config import DATA_DIR
             candidate_paths.append(DATA_DIR.parent / db_path)
+        else:
+            row = self.db.fetchone(
+                "SELECT file_path FROM strategies WHERE id = ?", (strategy_id,)
+            )
+            if row and row["file_path"]:
+                db_path = Path(row["file_path"])
+                candidate_paths.append(db_path)
+                candidate_paths.append(DATA_DIR.parent / db_path)
         candidate_paths.append(STRATEGIES_DIR / f"strategy_{strategy_id.lower()}.py")
 
         for p in candidate_paths:
@@ -386,6 +612,7 @@ class PaperTradeAgent(BaseAgent):
                     )
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
+                    self._module_cache[strategy_id] = (module, 0)
                     return module
                 except Exception:
                     return None

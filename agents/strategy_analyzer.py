@@ -1,6 +1,7 @@
 """Strategy Analyzer: pure-statistics agent that diagnoses WHY strategies fail
 and builds a knowledge base to inform future strategy creation."""
 import json
+import math
 import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -69,8 +70,8 @@ class StrategyAnalyzer(BaseAgent):
     def _fetch_all_results(self) -> List[dict]:
         rows = self.db.fetchall(
             "SELECT id, strategy_id, win_rate, profit_factor, max_drawdown, "
-            "x10_count, final_balance, total_trades, config, walk_forward, created_at "
-            "FROM backtest_results ORDER BY created_at DESC"
+            "x10_count, final_balance, total_trades, config, walk_forward, run_at "
+            "FROM backtest_results ORDER BY run_at DESC"
         )
         return [dict(r) for r in rows] if rows else []
 
@@ -97,7 +98,7 @@ class StrategyAnalyzer(BaseAgent):
         family_perf = {}
         for family, recs in family_data.items():
             wrs = [r["win_rate"] for r in recs if r["win_rate"] is not None]
-            pfs = [r["profit_factor"] for r in recs if r["profit_factor"] is not None]
+            pfs = [r["profit_factor"] for r in recs if r["profit_factor"] is not None and math.isfinite(r["profit_factor"])]
             dds = [r["max_drawdown"] for r in recs if r["max_drawdown"] is not None]
             balances = [r["final_balance"] for r in recs if r["final_balance"] is not None]
             trades = [r["total_trades"] for r in recs if r["total_trades"] is not None]
@@ -429,8 +430,10 @@ class StrategyAnalyzer(BaseAgent):
 
     @staticmethod
     def _safe_mean(values: List[float]) -> float:
-        return statistics.mean(values) if values else 0.0
+        clean = [v for v in values if v is not None and math.isfinite(v)]
+        return statistics.mean(clean) if clean else 0.0
 
     @staticmethod
     def _safe_stdev(values: List[float]) -> float:
-        return statistics.stdev(values) if len(values) >= 2 else 0.0
+        clean = [v for v in values if v is not None and math.isfinite(v)]
+        return statistics.stdev(clean) if len(clean) >= 2 else 0.0

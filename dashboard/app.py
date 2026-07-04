@@ -28,6 +28,12 @@ def _get_db() -> Database:
     return _db_instance
 
 
+def _count(db, sql: str) -> int:
+    """Safe COUNT query — returns 0 if fetchone returns None (DB locked)."""
+    row = db.fetchone(sql)
+    return (row["c"] or 0) if row else 0
+
+
 def _rows_to_list(rows) -> list:
     return [dict(r) for r in rows]
 
@@ -104,47 +110,43 @@ def api_events():
 @app.route("/api/summary")
 def api_summary():
     db = _get_db()
-    agents_running = db.fetchone(
-        "SELECT COUNT(*) AS c FROM agent_registry WHERE status='running'"
-    )["c"] or 0
-    agents_total = db.fetchone("SELECT COUNT(*) AS c FROM agent_registry")["c"] or 0
-    total_strategies = db.fetchone("SELECT COUNT(*) AS c FROM strategies")["c"] or 0
-    validated = db.fetchone(
-        "SELECT COUNT(*) AS c FROM strategies WHERE status='validated'"
-    )["c"] or 0
-    rejected = db.fetchone(
-        "SELECT COUNT(*) AS c FROM strategies WHERE status='rejected'"
-    )["c"] or 0
-    fragile = db.fetchone(
-        "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'"
-    )["c"] or 0
-    candidate = db.fetchone(
-        "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'"
-    )["c"] or 0
-    bt_count = db.fetchone("SELECT COUNT(*) AS c FROM backtest_results")["c"] or 0
+    agents_running = _count(db, "SELECT COUNT(*) AS c FROM agent_registry WHERE status='running'")
+    agents_total = _count(db, "SELECT COUNT(*) AS c FROM agent_registry")
+    total_strategies = _count(db, "SELECT COUNT(*) AS c FROM strategies")
+    validated = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='validated'")
+    rejected = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='rejected'")
+    fragile = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")
+    candidate = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")
+    bt_count = _count(db, "SELECT COUNT(*) AS c FROM backtest_results")
     total_cost_row = db.fetchone("SELECT COALESCE(SUM(cost_usd),0) AS c FROM token_usage")
     total_cost = float(total_cost_row["c"]) if total_cost_row else 0.0
-    pending = db.fetchone(
-        "SELECT COUNT(*) AS c FROM task_queue WHERE status='pending'"
-    )["c"] or 0
+    pending = _count(db, "SELECT COUNT(*) AS c FROM task_queue WHERE status='pending'")
 
-    # Aggregate backtest stats (exclude infinite PF outliers)
+    # Aggregate backtest stats (exclude fake PF>=50 outliers = 1-trade strategies)
     agg = db.fetchone(
-        "SELECT AVG(win_rate) as avg_wr, AVG(CASE WHEN profit_factor < 100 THEN profit_factor END) as avg_pf, "
-        "MAX(CASE WHEN profit_factor < 100 THEN profit_factor END) as max_pf, AVG(max_drawdown) as avg_dd, "
+        "SELECT AVG(win_rate) as avg_wr, AVG(CASE WHEN profit_factor < 50 THEN profit_factor END) as avg_pf, "
+        "MAX(CASE WHEN profit_factor < 50 THEN profit_factor END) as max_pf, AVG(max_drawdown) as avg_dd, "
         "SUM(total_trades) as total_trades, COUNT(*) as run_count "
         "FROM backtest_results WHERE walk_forward=0"
     )
 
+    # Best strategy: prefer WF+ validated, then validated, filter fake PF>=50
     best = db.fetchone(
         "SELECT s.id, s.best_profit_factor, s.best_win_rate, s.best_max_drawdown, "
         "s.best_x10_count, s.best_final_balance, s.best_config, s.family, s.status "
         "FROM strategies s "
-        "JOIN backtest_results br ON br.strategy_id = s.id "
-        "WHERE s.best_profit_factor < 100 AND br.total_trades >= 50 "
-        "GROUP BY s.id "
-        "ORDER BY s.best_final_balance DESC LIMIT 1"
+        "WHERE s.status = 'validated' AND s.walk_forward_passed = 1 "
+        "AND s.best_profit_factor < 50 AND s.best_profit_factor > 0 "
+        "ORDER BY s.best_profit_factor DESC LIMIT 1"
     )
+    if not best:
+        best = db.fetchone(
+            "SELECT s.id, s.best_profit_factor, s.best_win_rate, s.best_max_drawdown, "
+            "s.best_x10_count, s.best_final_balance, s.best_config, s.family, s.status "
+            "FROM strategies s "
+            "WHERE s.status = 'validated' AND s.best_profit_factor < 50 "
+            "ORDER BY s.best_profit_factor DESC LIMIT 1"
+        )
 
     # Risk state
     risk_row = db.fetchone("SELECT config FROM agent_registry WHERE id='risk_manager'")
@@ -186,15 +188,13 @@ def api_summary():
         prod_list.append(d_ps)
 
     # M5 strategies count (c/d/f/g series are M5)
-    m5_total = db.fetchone(
+    m5_total = _count(db,
         "SELECT COUNT(*) AS c FROM strategies WHERE "
-        "(id LIKE 'c%' OR id LIKE 'd%' OR id LIKE 'f%' OR id LIKE 'g%')"
-    )["c"] or 0
-    m5_profitable = db.fetchone(
+        "(id LIKE 'c%' OR id LIKE 'd%' OR id LIKE 'f%' OR id LIKE 'g%')")
+    m5_profitable = _count(db,
         "SELECT COUNT(*) AS c FROM strategies WHERE "
         "(id LIKE 'c%' OR id LIKE 'd%' OR id LIKE 'f%' OR id LIKE 'g%') "
-        "AND best_profit_factor > 1.0"
-    )["c"] or 0
+        "AND best_profit_factor > 1.0")
 
     # M5-specific aggregates (the timeframe that matters)
     m5_agg = db.fetchone(
@@ -244,12 +244,12 @@ def api_summary():
 def api_pipeline():
     """Execution pipeline counts per stage."""
     db = _get_db()
-    candidate = db.fetchone("SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")["c"] or 0
-    validated = db.fetchone("SELECT COUNT(*) AS c FROM strategies WHERE status='validated'")["c"] or 0
-    fragile = db.fetchone("SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")["c"] or 0
-    backtested = db.fetchone("SELECT COUNT(DISTINCT strategy_id) AS c FROM backtest_results")["c"] or 0
-    wf_passed = db.fetchone("SELECT COUNT(*) AS c FROM strategies WHERE walk_forward_passed=1")["c"] or 0
-    regime_passed = db.fetchone("SELECT COUNT(*) AS c FROM strategies WHERE regimes_passed>=3")["c"] or 0
+    candidate = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")
+    validated = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='validated'")
+    fragile = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")
+    backtested = _count(db, "SELECT COUNT(DISTINCT strategy_id) AS c FROM backtest_results")
+    wf_passed = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE walk_forward_passed=1")
+    regime_passed = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE regimes_passed>=3")
 
     # MC tested
     mc_tested = 0
@@ -284,7 +284,7 @@ def api_top():
         "SELECT id, family, status, best_win_rate, best_profit_factor, "
         "best_max_drawdown, best_x10_count, best_final_balance, "
         "regimes_passed, walk_forward_passed, best_config, generation, created_by "
-        "FROM strategies WHERE best_profit_factor > 0 "
+        "FROM strategies WHERE best_profit_factor > 0 AND best_profit_factor < 50 "
         "ORDER BY best_profit_factor DESC LIMIT 20"
     )
     result = []
@@ -325,11 +325,16 @@ def api_pf_distribution():
         "SELECT best_profit_factor FROM strategies "
         "WHERE best_profit_factor > 0 ORDER BY best_profit_factor"
     )
-    values = [r["best_profit_factor"] for r in rows]
+    values = [r["best_profit_factor"] for r in rows if r["best_profit_factor"] is not None]
     # Build histogram buckets
     buckets = {}
     for v in values:
-        b = round(v * 10) / 10  # bucket by 0.1
+        try:
+            if v != v or v > 1e6 or v < -1e6:
+                continue
+            b = round(v * 10) / 10  # bucket by 0.1
+        except (OverflowError, ValueError):
+            continue
         buckets[b] = buckets.get(b, 0) + 1
     labels = sorted(buckets.keys())
     counts = [buckets[l] for l in labels]
@@ -401,7 +406,7 @@ def api_timing():
     now_str = _dt.datetime.now().isoformat()
 
     # ── Backtest throughput ──
-    bt_total = db.fetchone("SELECT COUNT(*) AS c FROM backtest_results")["c"] or 0
+    bt_total = _count(db, "SELECT COUNT(*) AS c FROM backtest_results")
 
     # First and last backtest timestamps
     first_bt = db.fetchone("SELECT MIN(run_at) AS t FROM backtest_results")
@@ -420,7 +425,7 @@ def api_timing():
         windows[label] = row["c"] if row else 0
 
     # ── Event throughput ──
-    ev_total = db.fetchone("SELECT COUNT(*) AS c FROM events")["c"] or 0
+    ev_total = _count(db, "SELECT COUNT(*) AS c FROM events")
     ev_windows = {}
     for label, minutes in [("1h", 60), ("6h", 360), ("24h", 1440), ("7d", 10080)]:
         cutoff = (_dt.datetime.now() - _dt.timedelta(minutes=minutes)).isoformat()
@@ -430,7 +435,7 @@ def api_timing():
         ev_windows[label] = row["c"] if row else 0
 
     # ── Strategy creation throughput ──
-    strat_total = db.fetchone("SELECT COUNT(*) AS c FROM strategies")["c"] or 0
+    strat_total = _count(db, "SELECT COUNT(*) AS c FROM strategies")
     strat_windows = {}
     for label, minutes in [("1h", 60), ("6h", 360), ("24h", 1440), ("7d", 10080)]:
         cutoff = (_dt.datetime.now() - _dt.timedelta(minutes=minutes)).isoformat()
@@ -626,4 +631,9 @@ _watcher_thread.start()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8050, debug=False, threaded=True)
+    # 127.0.0.1: the dashboard must never be exposed publicly (it has no
+    # authentication). On a VPS, access it through RDP or an SSH tunnel.
+    # Set DASHBOARD_HOST=0.0.0.0 only on a trusted private network.
+    import os
+    app.run(host=os.environ.get("DASHBOARD_HOST", "127.0.0.1"),
+            port=8050, debug=False, threaded=True)

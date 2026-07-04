@@ -13,7 +13,7 @@ SL_ATR = 1.5
 TP_ATR = 3.0
 RISK_PCT = 0.04
 PIP_VALUE = 100.0
-MIN_LOT = 0.001
+MIN_LOT = 0.01   # broker minimum — 0.001 would get the order rejected
 MAX_LOT = 100.0
 
 def main():
@@ -93,7 +93,7 @@ def main():
         "tp": tp,
         "deviation": 20,
         "magic": MAGIC_NUMBER,
-        "comment": "TEST_I003_forced",
+        "comment": "PT_TEST",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -108,24 +108,41 @@ def main():
         print(f"Volume: {result.volume}")
         print(f"Price:  {result.price:.2f}")
 
-        # Log to database
+        # Persist to live_trades so trade_supervisor tracks it (close
+        # detection, P&L recording) exactly like a real strategy trade,
+        # and emit a trade_open event for the dashboard feed.
         try:
-            from core.db import AgentDB
+            import json as _json
+            from datetime import datetime, timezone
+            from core.db import Database
             from core.config import DB_PATH
-            db = AgentDB(str(DB_PATH))
+
+            db = Database(DB_PATH)
             db.execute(
-                "INSERT INTO agent_events (agent_id, event_type, message, metadata) "
+                "INSERT INTO live_trades "
+                "(strategy_id, ticket, direction, entry_price, sl, tp, lot, "
+                "opened_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+                ("TEST", result.order, "buy", result.price, sl, tp, lot,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            db.execute(
+                "INSERT INTO events (agent_id, event_type, event_message, metadata) "
                 "VALUES (?, ?, ?, ?)",
                 (
                     "paper_trade",
                     "trade_open",
-                    f"FORCED TEST: BUY @ {result.price:.2f}, SL={sl:.2f}, TP={tp:.2f}, lot={lot}",
-                    f'{{"strategy_id":"i003","direction":"buy","price":{result.price},"sl":{sl},"tp":{tp},"lot":{lot},"test":true}}',
+                    f"FORCED TEST TRADE: BUY @ {result.price:.2f}, "
+                    f"SL={sl:.2f}, TP={tp:.2f}, lot={lot}",
+                    _json.dumps({"strategy_id": "TEST", "direction": "buy",
+                                 "price": result.price, "sl": sl, "tp": tp,
+                                 "lot": lot, "ticket": result.order,
+                                 "test": True}),
                 ),
             )
-            print("Trade logged to agent_events DB")
+            db.close()
+            print("Trade persisted to live_trades + events (supervisor will track it)")
         except Exception as e:
-            print(f"DB logging failed (non-critical): {e}")
+            print(f"DB logging failed: {e}")
     else:
         print(f"\nOrder FAILED: retcode={result.retcode}, comment={result.comment}")
 

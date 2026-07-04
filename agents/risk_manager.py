@@ -10,7 +10,7 @@ from agents.base_agent import BaseAgent
 DEFAULT_MAX_DAILY_DD = 0.10         # 10% max daily drawdown
 DEFAULT_MAX_WEEKLY_DD = 0.20        # 20% max weekly drawdown
 DEFAULT_MAX_CONSECUTIVE_LOSSES = 5  # after N losses, reduce position size
-DEFAULT_MAX_OPEN_TRADES = 3         # max simultaneous positions
+DEFAULT_MAX_OPEN_TRADES = 15        # max simultaneous positions (portfolio approach)
 DEFAULT_SCALING_FACTOR = 0.5        # reduce lots by this factor after loss streak
 DEFAULT_COOLDOWN_MINUTES = 60       # pause after circuit breaker trip
 
@@ -23,6 +23,8 @@ class RiskManager(BaseAgent):
     - Circuit breaker: pauses trading if daily/weekly DD exceeds limits
     - Loss streak scaling: reduces position size after consecutive losses
     - Max exposure: limits number of simultaneous open trades
+    - Portfolio heat monitoring: total risk vs balance
+    - Per-strategy live performance tracking
     - Reports risk status to the system via events
     """
 
@@ -36,7 +38,6 @@ class RiskManager(BaseAgent):
     # ──────────────────────────────────────────────────
 
     def setup(self):
-        # Initialize risk state
         state = self.get_config("risk_state")
         if not state:
             self.set_config("risk_state", {
@@ -49,6 +50,7 @@ class RiskManager(BaseAgent):
                 "weekly_reset_date": datetime.now(timezone.utc).strftime("%Y-%W"),
                 "current_scaling": 1.0,
                 "open_trades": 0,
+                "portfolio_heat": 0.0,
             })
         self.logger.info("Risk Manager Agent ready")
 
@@ -87,6 +89,15 @@ class RiskManager(BaseAgent):
         # Process recent trade results from events table
         self._process_trade_events(state)
 
+        # Update open trades count from live_trades table
+        open_row = self.db.fetchone(
+            "SELECT COUNT(*) as cnt FROM live_trades WHERE status = 'open'"
+        )
+        state["open_trades"] = (open_row["cnt"] or 0) if open_row else 0
+
+        # Calculate portfolio heat
+        state["portfolio_heat"] = self._calculate_portfolio_heat()
+
         # Check daily DD limit
         max_daily_dd = self.get_config("max_daily_dd") or DEFAULT_MAX_DAILY_DD
         if state["daily_pnl"] < -max_daily_dd and not state.get("circuit_breaker_active"):
@@ -114,6 +125,38 @@ class RiskManager(BaseAgent):
         return self.get_config("tick_interval", 30)
 
     # ──────────────────────────────────────────────────
+    # Portfolio heat calculation
+    # ──────────────────────────────────────────────────
+
+    def _calculate_portfolio_heat(self) -> float:
+        """
+        Calculate portfolio heat: total risk across all open trades / equity.
+        Returns 0.0 if no data available.
+        """
+        from core.config import PIP_VALUE
+
+        rows = self.db.fetchall(
+            "SELECT lot, sl, entry_price FROM live_trades WHERE status = 'open'"
+        )
+        if not rows:
+            return 0.0
+
+        total_risk = 0.0
+        for r in rows:
+            sl_dist = abs(r["entry_price"] - r["sl"]) if r["sl"] else 0
+            total_risk += r["lot"] * sl_dist * PIP_VALUE
+
+        # Get current balance from MT5 or estimate
+        try:
+            import MetaTrader5 as mt5_mod
+            account = mt5_mod.account_info()
+            balance = account.balance if account else 50.0
+        except ImportError:
+            balance = 50.0
+
+        return total_risk / balance if balance > 0 else 0.0
+
+    # ──────────────────────────────────────────────────
     # Trade event processing
     # ──────────────────────────────────────────────────
 
@@ -134,11 +177,21 @@ class RiskManager(BaseAgent):
         for row in rows:
             try:
                 meta = json.loads(row["metadata"]) if row["metadata"] else {}
-                pnl_pct = meta.get("pnl_pct", 0.0)
+                pnl = meta.get("pnl", 0.0)
+
+                # Calculate pnl_pct from actual balance
+                try:
+                    import MetaTrader5 as mt5_mod
+                    account = mt5_mod.account_info()
+                    balance = account.balance if account else 50.0
+                except ImportError:
+                    balance = 50.0
+                pnl_pct = pnl / balance if balance > 0 else 0.0
+
                 state["daily_pnl"] = state.get("daily_pnl", 0.0) + pnl_pct
                 state["weekly_pnl"] = state.get("weekly_pnl", 0.0) + pnl_pct
 
-                if pnl_pct < 0:
+                if pnl < 0:
                     state["consecutive_losses"] = state.get("consecutive_losses", 0) + 1
                 else:
                     state["consecutive_losses"] = 0
@@ -187,12 +240,16 @@ class RiskManager(BaseAgent):
             f"weekly={state.get('weekly_pnl', 0):.2%}, "
             f"losses={state.get('consecutive_losses', 0)}, "
             f"scaling={state.get('current_scaling', 1.0):.0%}, "
+            f"heat={state.get('portfolio_heat', 0):.1%}, "
+            f"open={state.get('open_trades', 0)}, "
             f"CB={'ACTIVE' if state.get('circuit_breaker_active') else 'off'}",
             metadata={
                 "daily_pnl": state.get("daily_pnl", 0),
                 "weekly_pnl": state.get("weekly_pnl", 0),
                 "consecutive_losses": state.get("consecutive_losses", 0),
                 "current_scaling": state.get("current_scaling", 1.0),
+                "portfolio_heat": state.get("portfolio_heat", 0),
+                "open_trades": state.get("open_trades", 0),
                 "circuit_breaker_active": state.get("circuit_breaker_active", False),
             },
         )

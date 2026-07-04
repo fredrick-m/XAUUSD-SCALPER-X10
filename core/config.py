@@ -67,21 +67,28 @@ CORE_AGENTS = [
         "name": "backtest_runner",
         "module_path": "agents.backtest_runner",
         "class_name": "BacktestRunner",
-        "config": {"tick_interval": 10},
+        "config": {"tick_interval": 5},
         "can_spawn_children": False,
     },
     {
         "name": "strategy_factory",
         "module_path": "agents.strategy_factory",
         "class_name": "StrategyFactory",
-        "config": {"tick_interval": 600},
+        "config": {"tick_interval": 300},
+        "can_spawn_children": False,
+    },
+    {
+        "name": "template_factory",
+        "module_path": "agents.template_factory",
+        "class_name": "TemplateFactory",
+        "config": {"tick_interval": 15, "batch_size": 20},
         "can_spawn_children": False,
     },
     {
         "name": "evolution_agent",
         "module_path": "agents.evolution_agent",
         "class_name": "EvolutionAgent",
-        "config": {"tick_interval": 120},
+        "config": {"tick_interval": 60},
         "can_spawn_children": False,
     },
     {
@@ -139,7 +146,7 @@ CORE_AGENTS = [
         "name": "sensitivity_agent",
         "module_path": "agents.sensitivity_agent",
         "class_name": "SensitivityAgent",
-        "config": {"tick_interval": 300},
+        "config": {"tick_interval": 3600},
         "can_spawn_children": False,
     },
     {
@@ -158,6 +165,13 @@ CORE_AGENTS = [
     },
     # ── Tier 3: Live Trading & Reporting ──────────────
     {
+        "name": "signal_gatekeeper",
+        "module_path": "agents.signal_gatekeeper",
+        "class_name": "SignalGatekeeper",
+        "config": {"tick_interval": 120},
+        "can_spawn_children": False,
+    },
+    {
         "name": "risk_manager",
         "module_path": "agents.risk_manager",
         "class_name": "RiskManager",
@@ -172,6 +186,13 @@ CORE_AGENTS = [
         "can_spawn_children": False,
     },
     {
+        "name": "trade_supervisor",
+        "module_path": "agents.trade_supervisor",
+        "class_name": "TradeSupervisor",
+        "config": {"tick_interval": 30},
+        "can_spawn_children": False,
+    },
+    {
         "name": "report_agent",
         "module_path": "agents.report_agent",
         "class_name": "ReportAgent",
@@ -183,7 +204,7 @@ CORE_AGENTS = [
         "name": "param_optimizer",
         "module_path": "agents.param_optimizer",
         "class_name": "ParamOptimizer",
-        "config": {"tick_interval": 60},
+        "config": {"tick_interval": 3600},
         "can_spawn_children": False,
     },
     {
@@ -210,7 +231,7 @@ KNOWLEDGE_BASE_DIR = BASE_DIR / "knowledge_base"
 INITIAL_BALANCE = 50.0
 PIP_VALUE = 100.0
 DEFAULT_RISK_PCT = 0.04  # Monte Carlo validated: max safe risk for WR<50% strategies
-MIN_LOT = 0.001
+MIN_LOT = 0.01
 MAX_LOT = 100.0
 DEFAULT_SPREAD = 0.35
 SLIPPAGE_PER_FILL = 0.05
@@ -224,10 +245,56 @@ MIN_TRADES = 200
 MIN_REGIMES = 3
 
 # ── Validation thresholds (M5) ─────────────────────
-# M5 uses wider SL/TP ratios → lower WR is expected for profitable strategies
-M5_MIN_WIN_RATE = 0.30
+# MIN_TRADES 100: with ~11k strategies tested on the same dataset, small
+# samples pass by pure chance (multiple-testing bias). A 60% WR over 5
+# trades is a coin flip; over 100 trades it is evidence of an edge.
+M5_MIN_WIN_RATE = 0.60
 M5_MIN_PROFIT_FACTOR = 1.3
-M5_MAX_DRAWDOWN = 0.55
+M5_MAX_DRAWDOWN = 0.25
 M5_MIN_X10_COUNT = 0
 M5_MIN_TRADES = 100
 M5_MIN_REGIMES = 2
+
+# ── Probation tier ─────────────────────────────────
+# Strategies with a small sample but EXCEPTIONAL quality pass validation on
+# probation: stricter bars compensate the small n, and they trade at reduced
+# size until live trades complete the missing sample. The win-rate lower
+# bound (95%) naturally scales the bar with sample size: 38 trades need
+# ~68% WR to prove they beat a coin flip; 80 trades only need ~62%.
+PROBATION_MIN_TRADES = 30
+PROBATION_MIN_PF = 2.0        # vs 1.3 for full validation
+PROBATION_MAX_DD = 0.20       # vs 0.25 for full validation
+PROBATION_MIN_WR_LB = 0.50    # 95% lower confidence bound on WR must beat 50%
+PROBATION_HOLDOUT_MIN_TRADES = 5   # holdout has ~1/5 of the data
+PROBATION_HOLDOUT_MIN_PF = 1.0     # must at least not lose on the holdout
+
+# ── Final holdout (never used for selection) ───────
+# The last N months of data are excluded from validation and walk-forward.
+# A strategy is only deployable if it also survives on this untouched slice.
+HOLDOUT_MONTHS = 6
+HOLDOUT_MIN_PF = 1.2
+HOLDOUT_MIN_TRADES = 15
+
+# ── Family robustness gate (deployment filter) ─────
+# A single passing variant means little when thousands are generated; a
+# family is only trusted once several variants with real samples confirm it.
+FAMILY_MIN_TESTED = 5      # variants with >=100 trades needed to judge a family
+FAMILY_MIN_GOOD_RATIO = 0.4  # fraction of those with PF >= 1.1 to allow deploys
+
+# ── Portfolio diversification (execution-time) ─────
+# Cap concurrent open trades per template family: variants of one family
+# fire on the same market conditions, so stacking them multiplies one bet.
+FAMILY_MAX_OPEN = 2
+
+# ── Edge decay defense: periodic re-validation ─────
+# Deployed strategies are re-run through the full gauntlet every N days
+# against the (daily-refreshed) dataset. An edge that stops working on
+# recent data gets undeployed before it bleeds the account.
+REVALIDATION_DAYS = 7
+
+# ── Backtest vs live divergence tracking ───────────
+# After enough live trades, a strategy whose live results fall too far
+# below its backtest is auto-suspended (regime drift or overfit remnant).
+DIVERGENCE_MIN_TRADES = 20    # live trades before judging
+DIVERGENCE_MAX_WR_DROP = 0.15  # live WR > 15 points below backtest WR → suspend
+DIVERGENCE_MIN_PF_RATIO = 0.5  # live PF < 50% of backtest PF → suspend

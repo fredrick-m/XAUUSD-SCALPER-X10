@@ -269,7 +269,7 @@ class RegimeFilter(BaseAgent):
             regime_results[regime_name] = metrics_to_store
 
             # Check if this regime passes validation (use regimes_tested=1 for per-regime)
-            passed, fails = validate(metrics, regimes_tested=1)
+            passed, fails = validate(metrics, regimes_tested=1, timeframe="M5")
             regime_results[regime_name]["passed"] = passed
             if passed:
                 regimes_passed += 1

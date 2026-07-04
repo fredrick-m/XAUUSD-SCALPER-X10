@@ -1,0 +1,92 @@
+"""
+Strategy ENS_WEIGHTED_043: Ensemble Weighted Vote
+Family  : ensemble
+Goal    : XAUUSD-SCALPER-X10 — x10 returns in < 20 days
+Timeframe: M1 (XAUUSD)
+Description: Ensemble Weighted Vote combining 105 validated strategies
+Components: ["ENS_VOTE_027", "ENS_WEIGHTED_027", "ENS_VOTE_006", "ENS_WEIGHTED_006", "ENS_VOTE_013", "ENS_WEIGHTED_013", "ENS_VOTE_002", "ENS_WEIGHTED_002", "ENS_VOTE_028", "ENS_WEIGHTED_028", "c007", "ENS_VOTE_023", "ENS_WEIGHTED_023", "ENS_VOTE_024", "ENS_WEIGHTED_024", "ENS_VOTE_035", "ENS_WEIGHTED_035", "ENS_VOTE_041", "ENS_WEIGHTED_041", "ENS_VOTE_032", "ENS_WEIGHTED_032", "ENS_VOTE_033", "ENS_WEIGHTED_033", "ENS_VOTE_038", "ENS_WEIGHTED_038", "ENS_VOTE_039", "ENS_WEIGHTED_039", "ENS_VOTE_031", "ENS_WEIGHTED_031", "ENS_VOTE_034", "ENS_WEIGHTED_034", "ENS_VOTE_040", "ENS_WEIGHTED_040", "ENS_VOTE_025", "ENS_WEIGHTED_025", "ENS_VOTE_026", "ENS_WEIGHTED_026", "T01769", "ENS_VOTE_015", "ENS_WEIGHTED_015", "ENS_VOTE_016", "ENS_WEIGHTED_016", "ENS_WEIGHTED_014", "ENS_VOTE_009", "ENS_WEIGHTED_009", "ENS_VOTE_014", "ENS_VOTE_036", "ENS_WEIGHTED_036", "ENS_VOTE_037", "ENS_WEIGHTED_037", "ENS_VOTE_042", "ENS_WEIGHTED_042", "ENS_VOTE_003", "ENS_WEIGHTED_003", "ENS_VOTE_029", "ENS_WEIGHTED_029", "ENS_VOTE_030", "ENS_WEIGHTED_030", "T02494", "ENS_WEIGHTED_011", "ENS_VOTE_007", "ENS_WEIGHTED_007", "ENS_VOTE_019", "ENS_WEIGHTED_019", "ENS_VOTE_011", "ENS_VOTE_010", "ENS_WEIGHTED_010", "ENS_VOTE_008", "ENS_WEIGHTED_008", "ENS_VOTE_004", "ENS_WEIGHTED_004", "T02218", "ENS_VOTE_012", "ENS_WEIGHTED_012", "ENS_VOTE_021", "ENS_WEIGHTED_021", "T01471", "T02136", "T00836", "ENS_VOTE_018", "ENS_WEIGHTED_018", "ENS_VOTE_005", "ENS_WEIGHTED_005", "T00903", "T01798", "ENS_VOTE_017", "ENS_WEIGHTED_017", "T01021", "T00926", "ENS_VOTE_020", "ENS_WEIGHTED_020", "T01450", "T01698", "T00725", "ENS_VOTE_022", "ENS_WEIGHTED_022", "T02839", "ENS_WEIGHTED_001", "T01884", "ENS_VOTE_001", "T00949", "T02623", "T02150", "T02596", "T00844"]
+
+Parameters:
+  sl_atr: 1.9722
+  tp_atr: 2.8995
+  method: weighted
+"""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import ta
+
+PARAMS = {
+    "sl_atr": 1.9722,
+    "tp_atr": 2.8995,
+    "atr_period": 14,
+    "method": "weighted",
+    "component_ids": ["ENS_VOTE_027", "ENS_WEIGHTED_027", "ENS_VOTE_006", "ENS_WEIGHTED_006", "ENS_VOTE_013", "ENS_WEIGHTED_013", "ENS_VOTE_002", "ENS_WEIGHTED_002", "ENS_VOTE_028", "ENS_WEIGHTED_028", "c007", "ENS_VOTE_023", "ENS_WEIGHTED_023", "ENS_VOTE_024", "ENS_WEIGHTED_024", "ENS_VOTE_035", "ENS_WEIGHTED_035", "ENS_VOTE_041", "ENS_WEIGHTED_041", "ENS_VOTE_032", "ENS_WEIGHTED_032", "ENS_VOTE_033", "ENS_WEIGHTED_033", "ENS_VOTE_038", "ENS_WEIGHTED_038", "ENS_VOTE_039", "ENS_WEIGHTED_039", "ENS_VOTE_031", "ENS_WEIGHTED_031", "ENS_VOTE_034", "ENS_WEIGHTED_034", "ENS_VOTE_040", "ENS_WEIGHTED_040", "ENS_VOTE_025", "ENS_WEIGHTED_025", "ENS_VOTE_026", "ENS_WEIGHTED_026", "T01769", "ENS_VOTE_015", "ENS_WEIGHTED_015", "ENS_VOTE_016", "ENS_WEIGHTED_016", "ENS_WEIGHTED_014", "ENS_VOTE_009", "ENS_WEIGHTED_009", "ENS_VOTE_014", "ENS_VOTE_036", "ENS_WEIGHTED_036", "ENS_VOTE_037", "ENS_WEIGHTED_037", "ENS_VOTE_042", "ENS_WEIGHTED_042", "ENS_VOTE_003", "ENS_WEIGHTED_003", "ENS_VOTE_029", "ENS_WEIGHTED_029", "ENS_VOTE_030", "ENS_WEIGHTED_030", "T02494", "ENS_WEIGHTED_011", "ENS_VOTE_007", "ENS_WEIGHTED_007", "ENS_VOTE_019", "ENS_WEIGHTED_019", "ENS_VOTE_011", "ENS_VOTE_010", "ENS_WEIGHTED_010", "ENS_VOTE_008", "ENS_WEIGHTED_008", "ENS_VOTE_004", "ENS_WEIGHTED_004", "T02218", "ENS_VOTE_012", "ENS_WEIGHTED_012", "ENS_VOTE_021", "ENS_WEIGHTED_021", "T01471", "T02136", "T00836", "ENS_VOTE_018", "ENS_WEIGHTED_018", "ENS_VOTE_005", "ENS_WEIGHTED_005", "T00903", "T01798", "ENS_VOTE_017", "ENS_WEIGHTED_017", "T01021", "T00926", "ENS_VOTE_020", "ENS_WEIGHTED_020", "T01450", "T01698", "T00725", "ENS_VOTE_022", "ENS_WEIGHTED_022", "T02839", "ENS_WEIGHTED_001", "T01884", "ENS_VOTE_001", "T00949", "T02623", "T02150", "T02596", "T00844"],
+    "weights": {"ENS_VOTE_027": 8.5261, "ENS_WEIGHTED_027": 8.5261, "ENS_VOTE_006": 8.1739, "ENS_WEIGHTED_006": 8.1739, "ENS_VOTE_013": 7.9189, "ENS_WEIGHTED_013": 7.9189, "ENS_VOTE_002": 7.8848, "ENS_WEIGHTED_002": 7.8848, "ENS_VOTE_028": 7.6903, "ENS_WEIGHTED_028": 7.6903, "c007": 6.7682, "ENS_VOTE_023": 6.6703, "ENS_WEIGHTED_023": 6.6703, "ENS_VOTE_024": 6.6703, "ENS_WEIGHTED_024": 6.6703, "ENS_VOTE_035": 6.387, "ENS_WEIGHTED_035": 6.387, "ENS_VOTE_041": 6.387, "ENS_WEIGHTED_041": 6.387, "ENS_VOTE_032": 5.8373, "ENS_WEIGHTED_032": 5.8373, "ENS_VOTE_033": 5.8373, "ENS_WEIGHTED_033": 5.8373, "ENS_VOTE_038": 5.8373, "ENS_WEIGHTED_038": 5.8373, "ENS_VOTE_039": 5.8373, "ENS_WEIGHTED_039": 5.8373, "ENS_VOTE_031": 5.7942, "ENS_WEIGHTED_031": 5.7942, "ENS_VOTE_034": 5.6913, "ENS_WEIGHTED_034": 5.6913, "ENS_VOTE_040": 5.6913, "ENS_WEIGHTED_040": 5.6913, "ENS_VOTE_025": 5.3144, "ENS_WEIGHTED_025": 5.3144, "ENS_VOTE_026": 5.3144, "ENS_WEIGHTED_026": 5.3144, "T01769": 4.8155, "ENS_VOTE_015": 4.6827, "ENS_WEIGHTED_015": 4.6827, "ENS_VOTE_016": 4.597, "ENS_WEIGHTED_016": 4.597, "ENS_WEIGHTED_014": 4.5408, "ENS_VOTE_009": 4.4265, "ENS_WEIGHTED_009": 4.4265, "ENS_VOTE_014": 4.3507, "ENS_VOTE_036": 3.9496, "ENS_WEIGHTED_036": 3.9496, "ENS_VOTE_037": 3.9496, "ENS_WEIGHTED_037": 3.9496, "ENS_VOTE_042": 3.9496, "ENS_WEIGHTED_042": 3.9496, "ENS_VOTE_003": 3.7784, "ENS_WEIGHTED_003": 3.7784, "ENS_VOTE_029": 3.7423, "ENS_WEIGHTED_029": 3.7423, "ENS_VOTE_030": 3.7423, "ENS_WEIGHTED_030": 3.7423, "T02494": 3.3536, "ENS_WEIGHTED_011": 3.3274, "ENS_VOTE_007": 3.3089, "ENS_WEIGHTED_007": 3.3089, "ENS_VOTE_019": 3.2575, "ENS_WEIGHTED_019": 3.2575, "ENS_VOTE_011": 3.0977, "ENS_VOTE_010": 3.0973, "ENS_WEIGHTED_010": 3.0973, "ENS_VOTE_008": 3.0577, "ENS_WEIGHTED_008": 3.0577, "ENS_VOTE_004": 3.0377, "ENS_WEIGHTED_004": 3.0377, "T02218": 3.0372, "ENS_VOTE_012": 2.9612, "ENS_WEIGHTED_012": 2.9612, "ENS_VOTE_021": 2.8702, "ENS_WEIGHTED_021": 2.8702, "T01471": 2.7698, "T02136": 2.7017, "T00836": 2.6619, "ENS_VOTE_018": 2.6452, "ENS_WEIGHTED_018": 2.6452, "ENS_VOTE_005": 2.6445, "ENS_WEIGHTED_005": 2.6445, "T00903": 2.6287, "T01798": 2.5823, "ENS_VOTE_017": 2.5125, "ENS_WEIGHTED_017": 2.5125, "T01021": 2.4392, "T00926": 2.3097, "ENS_VOTE_020": 2.281, "ENS_WEIGHTED_020": 2.281, "T01450": 2.231, "T01698": 2.1818, "T00725": 2.1013, "ENS_VOTE_022": 2.0122, "ENS_WEIGHTED_022": 1.9462, "T02839": 1.8531, "ENS_WEIGHTED_001": 1.8047, "T01884": 1.7752, "ENS_VOTE_001": 1.7543, "T00949": 1.7302, "T02623": 1.7106, "T02150": 1.693, "T02596": 1.3766, "T00844": 1.3428},
+}
+
+STRATEGIES_DIR = Path(__file__).resolve().parent
+
+
+def _load_component_module(strategy_id: str):
+    """Load a component strategy module by ID."""
+    module_path = STRATEGIES_DIR / f"strategy_{strategy_id.lower()}.py"
+    if not module_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        f"strategy_{strategy_id.lower()}", str(module_path),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def generate_signals(df: pd.DataFrame, p: dict = PARAMS) -> pd.DataFrame:
+    """Generate ensemble signals by combining component strategy signals."""
+    df = df.copy()
+
+    # Compute ATR for SL/TP
+    atr_period = p.get("atr_period", 14)
+    df["ATR"] = ta.volatility.average_true_range(
+        df["High"], df["Low"], df["Close"], window=atr_period,
+    )
+
+    component_ids = p["component_ids"]
+    weights = p.get("weights", {})
+    method = p.get("method", "weighted")
+
+    # Collect signals from each component
+    all_signals = {}
+    for sid in component_ids:
+        mod = _load_component_module(sid)
+        if mod is None:
+            continue
+        mod_params = getattr(mod, "PARAMS", {})
+        try:
+            result = mod.generate_signals(df.copy(), mod_params)
+            if "signal" in result.columns:
+                all_signals[sid] = result["signal"]
+        except Exception:
+            continue
+
+    if not all_signals:
+        df["signal"] = 0
+        return df
+
+    sig_df = pd.DataFrame(all_signals)
+
+    if method == "weighted":
+        weighted_sum = pd.Series(0.0, index=df.index)
+        for sid in sig_df.columns:
+            w = weights.get(sid, 1.0)
+            weighted_sum += sig_df[sid].fillna(0) * w
+        df["signal"] = np.sign(weighted_sum).astype(int)
+    else:
+        vote_sum = sig_df.fillna(0).sum(axis=1)
+        df["signal"] = np.sign(vote_sum).astype(int)
+
+    return df

@@ -1403,8 +1403,14 @@ class TemplateFactory(BaseAgent):
                 n_tested = r["n_tested"] or 0
                 n_quality = r["n_quality"] or 0
                 n_validated = r["n_validated"] or 0
-                # Smoothed quality rate: +5 pseudo-tests keep new families alive
-                w = (1.0 + 2.0 * n_quality + 10.0 * n_validated) / (n_tested + 5.0)
+                # Smoothed quality rate. The validated bonus is CAPPED: weight
+                # must reflect marginal information value, not accumulated
+                # glory — an uncapped bonus made the factory generate one
+                # solved family almost exclusively (observed runaway).
+                w = (1.0 + 2.0 * min(n_quality, 10) + 10.0 * min(n_validated, 3)) / (n_tested + 5.0)
+                # A solved family (10+ validated) teaches us nothing new.
+                if n_validated >= 10:
+                    w *= 0.05
             else:
                 w = 1.0 / 5.0  # untested family: neutral prior
             weights.append(max(w, 0.01))

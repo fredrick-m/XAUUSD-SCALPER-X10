@@ -130,9 +130,18 @@ class MonteCarlo(BaseAgent):
     # ──────────────────────────────────────────────
 
     def _get_untested_strategies(self) -> list:
-        """Return validated strategies that have not been Monte Carlo tested."""
+        """Return deployable strategies (top-3 per family) not yet MC tested.
+
+        Hundreds of near-identical plateau clones don't need individual
+        Monte Carlo runs — only what actually deploys does.
+        """
         rows = self.db.fetchall(
-            "SELECT id, best_config FROM strategies WHERE status = 'validated'"
+            "SELECT id, best_config FROM ("
+            "  SELECT id, best_config, ROW_NUMBER() OVER ("
+            "    PARTITION BY family ORDER BY best_profit_factor DESC"
+            "  ) AS rn FROM strategies "
+            "  WHERE status = 'validated' AND walk_forward_passed = 1"
+            ") WHERE rn <= 3"
         )
         untested = []
         for row in rows:

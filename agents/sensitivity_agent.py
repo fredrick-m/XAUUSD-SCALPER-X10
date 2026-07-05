@@ -126,8 +126,15 @@ class SensitivityAgent(BaseAgent):
     # ──────────────────────────────────────────────────
 
     def _get_untested_strategies(self) -> list:
+        # Deployable only (top-3 per family): sensitivity analysis is heavy
+        # and plateau clones would burn CPU the backtest queue needs.
         rows = self.db.fetchall(
-            "SELECT id, best_config FROM strategies WHERE status = 'validated'"
+            "SELECT id, best_config FROM ("
+            "  SELECT id, best_config, ROW_NUMBER() OVER ("
+            "    PARTITION BY family ORDER BY best_profit_factor DESC"
+            "  ) AS rn FROM strategies "
+            "  WHERE status = 'validated' AND walk_forward_passed = 1"
+            ") WHERE rn <= 3"
         )
         untested = []
         for row in rows:

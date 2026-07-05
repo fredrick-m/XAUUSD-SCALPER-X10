@@ -15,6 +15,8 @@ MIN_LIVE_TRADES_FOR_WR = 5       # only enforce live WR after N trades
 MAX_OPEN_PER_STRATEGY = 1        # max 1 open trade per strategy
 MIN_MARGIN_RATIO = 1.5           # free margin must be 1.5x the required margin
 MAX_OPEN_TRADES_DEFAULT = 15     # default max simultaneous positions
+MAX_ENTRIES_PER_WINDOW = 2       # max same-direction entries per time window
+ENTRY_WINDOW_MINUTES = 15        # correlated strategies fire on the same move
 
 
 class SignalGatekeeper(BaseAgent):
@@ -77,6 +79,7 @@ class SignalGatekeeper(BaseAgent):
             self._check_strategy_already_open,
             self._check_family_exposure,
             self._check_portfolio_heat,
+            self._check_entry_burst,
             self._check_directional_bias,
             self._check_confidence_score,
             self._check_live_win_rate,
@@ -220,6 +223,28 @@ class SignalGatekeeper(BaseAgent):
             return False, f"portfolio_heat_exceeded ({heat:.1%} > {max_heat:.0%})"
         return True, "ok"
 
+    def _check_entry_burst(self, ctx: dict) -> Tuple[bool, str]:
+        """Correlated strategies fire on the same market move within seconds
+        of each other — that's one bet taken three times, not three bets.
+        Cap same-direction entries per rolling window."""
+        from datetime import datetime, timezone, timedelta
+
+        window_start = (
+            datetime.now(timezone.utc) - timedelta(minutes=ENTRY_WINDOW_MINUTES)
+        ).isoformat()
+        row = self.db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM live_trades "
+            "WHERE direction = ? AND opened_at >= ?",
+            (ctx["direction"], window_start),
+        )
+        recent = (row["cnt"] or 0) if row else 0
+        if recent >= MAX_ENTRIES_PER_WINDOW:
+            return False, (
+                f"entry_burst ({recent} {ctx['direction']} entries "
+                f"in last {ENTRY_WINDOW_MINUTES}min)"
+            )
+        return True, "ok"
+
     def _check_directional_bias(self, ctx: dict) -> Tuple[bool, str]:
         """Ensure not too many trades in the same direction."""
         rows = self.db.fetchall(
@@ -357,6 +382,44 @@ class SignalGatekeeper(BaseAgent):
                 graduated = live_trades >= 50 and live_wr > 0.50
                 if not graduated:
                     score = min(score, 45.0)  # cap below the half-lot tier
+
+            # Plateau score: the exploitation burst generates ~20 jittered
+            # neighbors of each winner. A real edge lives on a plateau —
+            # its neighbors validate too. An isolated peak is curve-fitting.
+            plateau = self.db.fetchone(
+                "SELECT COUNT(*) AS n_tested, "
+                "SUM(CASE WHEN v.pf >= 1.3 AND v.dd <= 0.25 AND v.trades >= 30 "
+                "    THEN 1 ELSE 0 END) AS n_good "
+                "FROM (SELECT strategy_id, MAX(profit_factor) AS pf, "
+                "             MAX(total_trades) AS trades, MIN(max_drawdown) AS dd "
+                "      FROM backtest_results GROUP BY strategy_id) v "
+                "JOIN strategies c ON c.id = v.strategy_id "
+                "WHERE c.parent_strategy = ?",
+                (r["id"],),
+            )
+            n_tested = (plateau["n_tested"] or 0) if plateau else 0
+            n_good = (plateau["n_good"] or 0) if plateau else 0
+            if n_tested >= 10:
+                ratio = n_good / n_tested
+                if ratio >= 0.5:
+                    score += 15  # confirmed plateau — robust edge
+                elif ratio >= 0.3:
+                    score += 5
+                elif ratio < 0.15:
+                    score = min(score, 35.0)  # suspected isolated peak
+                if n_tested >= 15 and n_good == 0:
+                    # Every neighbor failed: the winner was a statistical
+                    # spike. Undeploy it — live history is kept.
+                    self.db.execute(
+                        "UPDATE strategies SET walk_forward_passed = 0 WHERE id = ?",
+                        (r["id"],),
+                    )
+                    self.emit_event(
+                        "warning",
+                        f"Strategy {r['id']} UNDEPLOYED: isolated peak "
+                        f"(0/{n_tested} burst neighbors validated)",
+                        metadata={"strategy_id": r["id"], "n_tested": n_tested},
+                    )
 
             # Store/update confidence score
             self.db.execute(

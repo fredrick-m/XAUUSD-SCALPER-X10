@@ -48,7 +48,8 @@ def _probation_ok(metrics: dict) -> bool:
 # Standalone worker function (runs in subprocess)
 # ══════════════════════════════════════════════
 
-def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes, data_hash: str) -> dict:
+def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
+                     data_hash: str, slippage_override: float = None) -> dict:
     """Run a single backtest in an isolated process.
 
     Returns a result dict with status and metrics/reason.
@@ -124,6 +125,7 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes, data_
             risk_pct=DEFAULT_RISK_PCT, trailing_stop=use_trailing,
             max_bars_in_trade=200, session_filter=True,
             session_hours=(sess_start, sess_end),
+            slippage_override=slippage_override,
         )
 
     # ── Final holdout split: the last HOLDOUT_MONTHS are NEVER used for
@@ -215,12 +217,38 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes, data_
         except Exception:
             holdout_passed = False
 
+    # Per-regime performance (validated strategies only — 3 masked sims).
+    # paper_trade uses this to bench a strategy while the CURRENT market
+    # regime is one it demonstrably loses in.
+    regime_perf = {}
+    try:
+        df_reg = add_regime_indicators(df.iloc[:h_idx])
+        for reg in ("TREND", "RANGE", "HIGH_VOLATILITY"):
+            sigs_r = signals.iloc[:h_idx].where(df_reg["regime"] == reg, 0)
+            if int((sigs_r != 0).sum()) < 5:
+                continue
+            m_r = run_simulation(
+                df.iloc[:h_idx], sigs_r, sl_prices.iloc[:h_idx],
+                tp_prices.iloc[:h_idx], directions.iloc[:h_idx],
+                risk_pct=DEFAULT_RISK_PCT, trailing_stop=use_trailing,
+                max_bars_in_trade=200, session_filter=True,
+                session_hours=(sess_start, sess_end),
+                slippage_override=slippage_override,
+            )
+            regime_perf[reg] = {
+                "trades": m_r.get("total_trades", 0),
+                "pf": m_r.get("profit_factor", 0.0),
+            }
+    except Exception:
+        regime_perf = {}
+
     # Strip equity_curve for serialization
     metrics_clean = {k: v for k, v in metrics.items() if k != "equity_curve"}
 
     return {
         "strategy_id": strategy_id,
         "status": "validated",
+        "regime_perf": regime_perf,
         # Deployable = walk-forward AND holdout survived
         "wf_passed": wf_passed and holdout_passed,
         "wf_only": wf_passed,
@@ -335,13 +363,14 @@ class BacktestRunner(BaseAgent):
         self.logger.info(f"Submitting {len(jobs)} backtests to parallel pool")
 
         # Use 3 workers (leave 1 core for main thread + other agents)
+        slip = self._measured_slippage()
         results = []
         try:
             with ProcessPoolExecutor(max_workers=3) as pool:
                 futures = {
                     pool.submit(
                         _backtest_worker,
-                        sid, fp, self._df_m5_pickle, self._data_hash
+                        sid, fp, self._df_m5_pickle, self._data_hash, slip
                     ): sid
                     for sid, fp in jobs
                 }
@@ -387,6 +416,8 @@ class BacktestRunner(BaseAgent):
             metrics = r.get("metrics", {})
             self._store_results(sid, metrics, {})
             self._update_strategy_metrics(sid, metrics)
+            if r.get("regime_perf"):
+                self._merge_best_config(sid, "regime_perf", r["regime_perf"])
 
             if r.get("wf_passed", False):
                 self.db.execute(
@@ -497,6 +528,39 @@ class BacktestRunner(BaseAgent):
     # Strategy loading (used by task queue / single backtest)
     # ──────────────────────────────────────────────────
 
+    def _measured_slippage(self) -> Optional[float]:
+        """Median slippage measured on real fills (>= 20 samples required).
+
+        Replaces the theoretical SLIPPAGE_PER_FILL constant so backtests
+        converge to what THIS broker actually does. Cached for 1 hour.
+        """
+        import time as _time
+        now = _time.time()
+        if getattr(self, "_slip_cache_time", 0) > now - 3600:
+            return getattr(self, "_slip_cache", None)
+
+        vals = []
+        rows = self.db.fetchall(
+            "SELECT metadata FROM events "
+            "WHERE event_type = 'trade_open' AND metadata LIKE '%\"slippage\"%'"
+        )
+        for r in rows:
+            try:
+                m = json.loads(r["metadata"]) if r["metadata"] else {}
+                s = m.get("slippage")
+                if s is not None:
+                    vals.append(float(s))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+
+        self._slip_cache = float(np.median(vals)) if len(vals) >= 20 else None
+        self._slip_cache_time = now
+        if self._slip_cache is not None:
+            self.logger.info(
+                f"Using measured slippage: {self._slip_cache:.3f} ({len(vals)} fills)"
+            )
+        return self._slip_cache
+
     def _resolve_strategy_path(self, strategy_id: str) -> Optional[Path]:
         """Find the strategy source file on disk. Returns the path or None."""
         row = self.db.fetchone("SELECT file_path FROM strategies WHERE id = ?", (strategy_id,))
@@ -601,7 +665,8 @@ class BacktestRunner(BaseAgent):
             return None
 
         result = _backtest_worker(
-            strategy_id, str(file_path), self._df_m5_pickle, self._data_hash
+            strategy_id, str(file_path), self._df_m5_pickle, self._data_hash,
+            self._measured_slippage(),
         )
         self._apply_worker_result(result)
         # Never return the raw metrics: the equity_curve (one float per bar)
@@ -648,7 +713,8 @@ class BacktestRunner(BaseAgent):
             return
 
         self.logger.info(f"Re-validating deployed strategy {sid} (edge decay check)")
-        result = _backtest_worker(sid, str(file_path), self._df_m5_pickle, self._data_hash)
+        result = _backtest_worker(sid, str(file_path), self._df_m5_pickle,
+                                  self._data_hash, self._measured_slippage())
 
         status = result.get("status")
         metrics = result.get("metrics") or {}
@@ -678,6 +744,25 @@ class BacktestRunner(BaseAgent):
             metadata={"strategy_id": strategy_id, "reason": reason},
         )
         self.logger.warning(f"Strategy {strategy_id} undeployed: {reason}")
+
+    def _merge_best_config(self, strategy_id: str, key: str, value):
+        """Merge one key into strategies.best_config without clobbering the
+        rest (monte_carlo, sensitivity, probation all live there)."""
+        row = self.db.fetchone(
+            "SELECT best_config FROM strategies WHERE id = ?", (strategy_id,)
+        )
+        config = {}
+        if row and row["best_config"]:
+            try:
+                config = (json.loads(row["best_config"])
+                          if isinstance(row["best_config"], str) else row["best_config"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        config[key] = value
+        self.db.execute(
+            "UPDATE strategies SET best_config = ? WHERE id = ?",
+            (json.dumps(config), strategy_id),
+        )
 
     def _mark_probation(self, strategy_id: str):
         """Flag a probation strategy: best_config marker (merged, so Monte

@@ -1327,7 +1327,10 @@ class TemplateFactory(BaseAgent):
                     continue
                 fp = STRATEGIES_DIR / f"strategy_{new_id.lower()}.py"
                 fp.write_text(code, encoding="utf-8")
-                self._register(new_id, str(fp), srow["family"])
+                self._register(
+                    new_id, str(fp), srow["family"], parent=sid,
+                    description=f"Burst neighbor of winner {sid}",
+                )
                 made += 1
 
             self.emit_event(
@@ -1428,18 +1431,20 @@ class TemplateFactory(BaseAgent):
             return f"T{last_num + 1:05d}"
         return "T00001"
 
-    def _register(self, strategy_id: str, file_path: str, family: str) -> None:
+    def _register(self, strategy_id: str, file_path: str, family: str,
+                  parent: str = None, description: str = None) -> None:
         """Insert strategy record into the strategies table."""
         self.db.execute(
             "INSERT OR IGNORE INTO strategies "
-            "(id, file_path, family, description, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(id, file_path, family, description, created_by, status, parent_strategy) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 strategy_id,
                 file_path,
                 family,
-                f"Auto-generated {family} strategy",
+                description or f"Auto-generated {family} strategy",
                 self.agent_id,
                 "candidate",
+                parent,
             ),
         )

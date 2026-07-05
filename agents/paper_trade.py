@@ -349,9 +349,20 @@ class PaperTradeAgent(BaseAgent):
             return
         self._last_m5_bar_time = last_bar_time
 
+        # Current market regime — strategies with proven losses in this
+        # regime sit this scan out (regime_perf measured at validation).
+        current_regime = None
+        try:
+            from engine.backtest import add_regime_indicators
+            reg_df = add_regime_indicators(df.tail(300).copy())
+            current_regime = str(reg_df["regime"].iloc[-1])
+        except Exception:
+            pass
+
         self.logger.info(
             f"Scanning {len(df)} closed M5 bars, "
-            f"last={df['time'].iloc[-1]}, close={df['Close'].iloc[-1]:.2f}"
+            f"last={df['time'].iloc[-1]}, close={df['Close'].iloc[-1]:.2f}, "
+            f"regime={current_regime}"
         )
 
         # Get account info for gatekeeper
@@ -372,6 +383,19 @@ class PaperTradeAgent(BaseAgent):
             # Check if strategy already has an open trade (from pre-fetched set)
             if strategy_id in open_trade_ids:
                 continue
+
+            # Regime bench: skip strategies that demonstrably LOSE in the
+            # current regime (evidence required: PF < 1.0 over 10+ trades).
+            # No data for this regime -> allowed (innocent until proven).
+            if current_regime and current_regime in ("TREND", "RANGE", "HIGH_VOLATILITY"):
+                try:
+                    cfg = strat.get("best_config")
+                    cfg = json.loads(cfg) if isinstance(cfg, str) else (cfg or {})
+                    perf = (cfg.get("regime_perf") or {}).get(current_regime)
+                    if perf and perf.get("trades", 0) >= 10 and perf.get("pf", 99) < 1.0:
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
             # Load strategy module and generate signal
             module = self._load_strategy_module(strategy_id, strat.get("file_path"))
@@ -456,6 +480,21 @@ class PaperTradeAgent(BaseAgent):
         if tick is None:
             return None
 
+        # Spread guard: never enter when the instantaneous spread blows past
+        # what the backtest assumed (rollover, pre-news, Friday close). The
+        # ceiling adapts to the recent norm: max(2x median, $0.20).
+        current_spread = tick.ask - tick.bid
+        if "spread" in df.columns:
+            typical = float(df["spread"].tail(500).median()) * 0.01
+        else:
+            typical = 0.10
+        max_spread = max(2.0 * typical, 0.20)
+        if current_spread > max_spread:
+            self.logger.info(
+                f"Entry blocked: spread {current_spread:.2f} > ceiling {max_spread:.2f}"
+            )
+            return None
+
         # ATR calculation
         atr_series = ta.volatility.average_true_range(
             df["High"], df["Low"], df["Close"], window=14
@@ -523,13 +562,19 @@ class PaperTradeAgent(BaseAgent):
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
             now = datetime.now(timezone.utc).isoformat()
 
-            # Persist to live_trades table
+            # Measured slippage: |requested - filled|. Once 20+ samples
+            # exist, backtests use the measured median instead of the
+            # theoretical constant — the engine converges to THIS broker.
+            fill_price = result.price or params["price"]
+            slippage = abs(fill_price - params["price"])
+
+            # Persist to live_trades table (entry at the real fill)
             self.db.execute(
                 "INSERT INTO live_trades "
                 "(strategy_id, ticket, direction, entry_price, sl, tp, lot, "
                 "opened_at, status) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
-                (strategy_id, result.order, direction, params["price"],
+                (strategy_id, result.order, direction, fill_price,
                  params["sl"], params["tp"], lot, now),
             )
 
@@ -542,6 +587,8 @@ class PaperTradeAgent(BaseAgent):
                     "strategy_id": strategy_id,
                     "direction": direction,
                     "price": params["price"],
+                    "fill_price": fill_price,
+                    "slippage": slippage,
                     "sl": params["sl"],
                     "tp": params["tp"],
                     "lot": lot,

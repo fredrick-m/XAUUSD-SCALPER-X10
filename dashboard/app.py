@@ -126,7 +126,16 @@ def api_summary():
         "SELECT COUNT(DISTINCT family) AS c FROM strategies "
         "WHERE status='validated' AND walk_forward_passed=1",
     )
-    deployed = min(deployable, deployed_families * 3)
+    # Same top-3-per-family rule as paper_trade._load_active_strategies
+    deployed = _count(
+        db,
+        "SELECT COUNT(*) AS c FROM ("
+        "  SELECT id, ROW_NUMBER() OVER ("
+        "    PARTITION BY family ORDER BY best_profit_factor DESC"
+        "  ) AS rn FROM strategies "
+        "  WHERE status='validated' AND walk_forward_passed=1"
+        ") WHERE rn <= 3",
+    )
     rejected = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='rejected'")
     fragile = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")
     candidate = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")

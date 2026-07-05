@@ -79,6 +79,7 @@
         <div class="stat-item"><span class="stat-label">EXPLORED</span><span class="stat-value" id="st-total">--</span></div>
         <div class="stat-item"><span class="stat-label">BACKTESTS</span><span class="stat-value" id="st-bt">--</span></div>
         <div class="stat-item"><span class="stat-label">VALIDATED</span><span class="stat-value green" id="st-validated">--</span></div>
+        <div class="stat-item"><span class="stat-label">DEPLOYED</span><span class="stat-value green" id="st-deployed">--</span></div>
       </div>
       <div class="stat-row" style="margin-top:4px;">
         <div class="stat-item"><span class="stat-label">AVG PF</span><span class="stat-value" id="st-pf" style="color:var(--text3);">--</span></div>
@@ -330,6 +331,8 @@ async function loadSummary() {
     document.getElementById('st-wr').textContent = (d.avg_wr*100).toFixed(1) + '%';
     document.getElementById('st-bpf').textContent = d.max_pf.toFixed(2);
     document.getElementById('st-validated').textContent = d.validated;
+    const dep = document.getElementById('st-deployed');
+    if (dep) dep.textContent = `${d.deployed ?? '--'} (${d.deployed_families ?? 0} fam)`;
     document.getElementById('st-rejected').textContent = d.rejected;
     document.getElementById('st-fragile').textContent = d.fragile;
     document.getElementById('st-candidate').textContent = d.candidate;

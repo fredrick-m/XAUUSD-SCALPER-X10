@@ -114,6 +114,19 @@ def api_summary():
     agents_total = _count(db, "SELECT COUNT(*) AS c FROM agent_registry")
     total_strategies = _count(db, "SELECT COUNT(*) AS c FROM strategies")
     validated = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='validated'")
+    # Deployable = validated + walk-forward + holdout. The live bench is
+    # further capped at top-3 per family by paper_trade.
+    deployable = _count(
+        db,
+        "SELECT COUNT(*) AS c FROM strategies "
+        "WHERE status='validated' AND walk_forward_passed=1",
+    )
+    deployed_families = _count(
+        db,
+        "SELECT COUNT(DISTINCT family) AS c FROM strategies "
+        "WHERE status='validated' AND walk_forward_passed=1",
+    )
+    deployed = min(deployable, deployed_families * 3)
     rejected = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='rejected'")
     fragile = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")
     candidate = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")
@@ -211,6 +224,9 @@ def api_summary():
         "agents_total": agents_total,
         "total_strategies": total_strategies,
         "validated": validated,
+        "deployable": deployable,
+        "deployed": deployed,
+        "deployed_families": deployed_families,
         "rejected": rejected,
         "fragile": fragile,
         "candidate": candidate,

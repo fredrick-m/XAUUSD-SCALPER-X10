@@ -1298,10 +1298,27 @@ class TemplateFactory(BaseAgent):
             if not sid:
                 continue
             srow = self.db.fetchone(
-                "SELECT family, file_path FROM strategies WHERE id = ?", (sid,)
+                "SELECT family, file_path, parent_strategy FROM strategies WHERE id = ?",
+                (sid,),
             )
             if not srow or not srow["family"]:
                 continue
+
+            # ANTI CHAIN-REACTION: burst children do NOT burst in turn.
+            # Without this, one strong plateau family compounds 20 -> 400 ->
+            # 8000 clones (observed live: hybrid_supertrend_rsi flooded the
+            # whole pipeline in a day).
+            if srow["parent_strategy"]:
+                continue
+            # A family only needs ~40 neighbors to prove/refute its plateau.
+            kin = self.db.fetchone(
+                "SELECT COUNT(*) AS cnt FROM strategies "
+                "WHERE family = ? AND parent_strategy IS NOT NULL",
+                (srow["family"],),
+            )
+            if kin and (kin["cnt"] or 0) >= 40:
+                continue
+
             template = templates_by_family.get(srow["family"])
             if template is None:
                 continue  # evolved/ensemble winners are handled by evolution_agent

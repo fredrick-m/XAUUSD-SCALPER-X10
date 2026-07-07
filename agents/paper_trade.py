@@ -388,8 +388,25 @@ class PaperTradeAgent(BaseAgent):
         )
         open_trade_ids = {r["strategy_id"] for r in open_trades_rows}
 
-        signals_found = 0
+        # Scan subset: all strategies stay DEPLOYED (eligible), but each
+        # scan only evaluates the top SCAN_PER_FAMILY per family. Hundreds
+        # of near-identical plateau clones fire on the same bar and the
+        # gatekeeper caps entries at 2/direction/15min — so scanning the
+        # best representatives captures IDENTICAL live signals while keeping
+        # the scan fast enough to stay in sync with M5 bars (373 clones ->
+        # an 11-min scan; capped -> seconds). Ranked by PF (load order).
+        SCAN_PER_FAMILY = 25
+        scan_list = []
+        fam_seen = {}
         for strat in self._active_strategies:
+            fam = strat.get("family") or strat["id"]
+            n = fam_seen.get(fam, 0)
+            if n < SCAN_PER_FAMILY:
+                scan_list.append(strat)
+                fam_seen[fam] = n + 1
+
+        signals_found = 0
+        for strat in scan_list:
             strategy_id = strat["id"]
 
             # Check if strategy already has an open trade (from pre-fetched set)

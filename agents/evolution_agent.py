@@ -68,8 +68,14 @@ class EvolutionAgent(BaseAgent):
 
             if parent_pf >= 1.5 and 0 < parent_trades < 100:
                 # Frequency-directed: gentle mutations on the logic params,
-                # aggressive push on the frequency levers.
+                # aggressive relaxation of the levers that actually control
+                # signal rate. Measured truth: for these families cooldown/
+                # session cost ~0 signals — rarity comes from EXTREME ENTRY
+                # THRESHOLDS. So we relax those toward less-extreme values
+                # (RSI 26->~33, bands 2.3->~1.9, ADX 30->~25); validation
+                # still guards quality, so noise can't slip through.
                 mutated = self._mutate_params(config, mutation_rate=0.4, mutation_range=0.15)
+                mutated = self._relax_entry_thresholds(mutated)
                 if "cooldown" in mutated:
                     mutated["cooldown"] = max(1, int(mutated["cooldown"] * 0.5))
                 if "session_start" in mutated:
@@ -163,6 +169,33 @@ class EvolutionAgent(BaseAgent):
         return scored[:limit]
 
     # ── param manipulation ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _relax_entry_thresholds(params: dict) -> dict:
+        """Nudge extreme entry thresholds toward less-extreme = more signals.
+
+        This is the true frequency lever for selective mean-reversion /
+        breakout families: an RSI<26 trigger is rare, RSI<33 far less so.
+        Oversold bounds rise, overbought bounds fall, band width and trend
+        floors shrink. Validation (WR/PF/DD, walk-forward, holdout) still
+        judges the result, so relaxing here can only propose — never approve.
+        """
+        p = dict(params)
+        # Oversold entry bounds: raise toward the middle (more longs fire)
+        for k in ("rsi_low", "mfi_low", "uo_low", "stoch_low", "cci_low"):
+            if k in p and isinstance(p[k], (int, float)):
+                p[k] = round(p[k] + random.uniform(4, 9), 4)
+        # Overbought entry bounds: lower toward the middle (more shorts fire)
+        for k in ("rsi_high", "mfi_high", "uo_high", "stoch_high", "cci_high"):
+            if k in p and isinstance(p[k], (int, float)):
+                p[k] = round(p[k] - random.uniform(4, 9), 4)
+        # Band width / trend floors: shrink so crosses happen more often
+        if "bb_std" in p:
+            p["bb_std"] = round(max(1.2, p["bb_std"] - random.uniform(0.2, 0.5)), 4)
+        for k in ("adx_threshold", "adx_floor"):
+            if k in p and isinstance(p[k], (int, float)):
+                p[k] = int(max(15, p[k] - random.randint(3, 7)))
+        return p
 
     @staticmethod
     def _mutate_params(params: dict, mutation_rate: float = 0.5, mutation_range: float = 0.2) -> dict:

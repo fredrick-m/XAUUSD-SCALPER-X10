@@ -29,6 +29,27 @@ import pandas as pd
 import numpy as np
 import ta
 
+
+def _combine_triggers(triggers, mode):
+    """Combine the trigger conditions per the searchable 'logic' gene.
+    'and' = all (strict, rare) · 'or' = any (loose, frequent) ·
+    '2of3' = majority (balanced). The trend filter stays mandatory outside."""
+    if not triggers:
+        return None
+    if mode == "or":
+        out = triggers[0]
+        for t in triggers[1:]:
+            out = out | t
+        return out
+    if mode == "majority" and len(triggers) >= 2:
+        s = sum(t.astype("boolean").fillna(False).astype(int) for t in triggers)
+        return s >= max(1, (len(triggers) + 1) // 2)
+    out = triggers[0]
+    for t in triggers[1:]:
+        out = out & t
+    return out
+
+
 PARAMS = __PARAMS__
 
 def generate_signals(df: pd.DataFrame, p: dict = PARAMS) -> pd.DataFrame:
@@ -39,8 +60,11 @@ def generate_signals(df: pd.DataFrame, p: dict = PARAMS) -> pd.DataFrame:
     downtrend = df["ema_f"] < df["ema_s"]
 __INDICATORS__
     df["signal"] = 0
-    long_cond = __LONG__
-    short_cond = __SHORT__
+    _logic = p.get("logic", "and")
+    _long_trig = _combine_triggers([__LONG_TRIG__], _logic)
+    _short_trig = _combine_triggers([__SHORT_TRIG__], _logic)
+    long_cond = (__LONG_TREND__) & _long_trig if _long_trig is not None else (__LONG_TREND__)
+    short_cond = (__SHORT_TREND__) & _short_trig if _short_trig is not None else (__SHORT_TREND__)
     df.loc[long_cond, "signal"] = 1
     df.loc[short_cond, "signal"] = -1
     # Cooldown: suppress signals within N bars of last signal
@@ -1417,31 +1441,67 @@ class TemplateFactory(BaseAgent):
 
         return random.choices(TEMPLATES, weights=weights, k=1)[0]
 
+    # Combination logic gene: how the trigger conditions are AND/OR/majority
+    # combined. Weighted toward "and" (the proven strict default) but the
+    # search now explores looser, higher-frequency variants too.
+    LOGIC_MODES = ["and", "and", "or", "majority"]
+
+    @staticmethod
+    def _split_conditions(cond: str):
+        """Split a template condition string into (trend_term, [triggers]).
+
+        Conditions are top-level '&'-joined clauses; the first is the
+        mandatory EMA trend filter (uptrend/downtrend). The rest are the
+        triggers that the 'logic' gene recombines. Splitting only at top
+        level (paren depth 0) keeps nested expressions intact.
+        """
+        parts, depth, cur = [], 0, ""
+        i = 0
+        while i < len(cond):
+            ch = cond[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            if ch == "&" and depth == 0:
+                parts.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+            i += 1
+        if cur.strip():
+            parts.append(cur.strip())
+        parts = [p for p in parts if p]
+        if not parts:
+            return "True", []
+        return parts[0], parts[1:]
+
     @staticmethod
     def _random_params(ranges: dict) -> dict:
-        """Sample concrete parameter values from ranges.
-
-        If both bounds of a range are int, sample with randint.
-        Otherwise sample a uniform float rounded to 4 decimal places.
-        """
+        """Sample concrete parameter values from ranges, plus the logic gene."""
         params = {}
         for key, (lo, hi) in ranges.items():
             if isinstance(lo, int) and isinstance(hi, int):
                 params[key] = random.randint(lo, hi)
             else:
                 params[key] = round(random.uniform(lo, hi), 4)
+        params["logic"] = random.choice(TemplateFactory.LOGIC_MODES)
         return params
 
     def _build_code(self, strategy_id: str, template: dict, params: dict) -> str:
         """Fill the STRATEGY_TEMPLATE placeholders and return source code."""
         indicator_lines = "\n".join(f"    {line}" for line in template["indicators"])
+        long_trend, long_trig = self._split_conditions(template["long"])
+        short_trend, short_trig = self._split_conditions(template["short"])
         code = STRATEGY_TEMPLATE
         code = code.replace("__ID__", strategy_id)
         code = code.replace("__FAMILY__", template["family"])
         code = code.replace("__PARAMS__", repr(params))
         code = code.replace("__INDICATORS__", indicator_lines)
-        code = code.replace("__LONG__", template["long"])
-        code = code.replace("__SHORT__", template["short"])
+        code = code.replace("__LONG_TREND__", long_trend)
+        code = code.replace("__SHORT_TREND__", short_trend)
+        code = code.replace("__LONG_TRIG__", ", ".join(long_trig))
+        code = code.replace("__SHORT_TRIG__", ", ".join(short_trig))
         return code
 
     def _next_id(self) -> str:

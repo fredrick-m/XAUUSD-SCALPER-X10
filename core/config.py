@@ -262,7 +262,11 @@ M5_MIN_REGIMES = 2
 # bound (95%) naturally scales the bar with sample size: 38 trades need
 # ~68% WR to prove they beat a coin flip; 80 trades only need ~62%.
 PROBATION_MIN_TRADES = 30
-PROBATION_MIN_PF = 2.0        # vs 1.3 for full validation
+# PF 1.6 (was 2.0): the WR lower bound below is the real statistical guard —
+# it already scales the required win rate by sample size. An extra PF>=2.0
+# cap on top was discarding genuine edges (PF 1.5-2.0, WR-LB > 50%, holdout
+# survivors) that deploy safely at quarter-lot with live graduation.
+PROBATION_MIN_PF = 1.6        # vs 1.3 for full validation
 PROBATION_MAX_DD = 0.20       # vs 0.25 for full validation
 PROBATION_MIN_WR_LB = 0.50    # 95% lower confidence bound on WR must beat 50%
 PROBATION_HOLDOUT_MIN_TRADES = 5   # holdout has ~1/5 of the data

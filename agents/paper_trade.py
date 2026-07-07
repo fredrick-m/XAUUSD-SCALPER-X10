@@ -17,7 +17,12 @@ except ImportError:
 
 SYMBOL = "XAUUSD"
 MAGIC_NUMBER = 424242
-M5_BARS_LOOKBACK = 5000
+# 600 bars, not 5000: live scanning only needs the LAST closed bar's signal
+# plus enough warm-up for the slowest indicator (EMA<=100, BB<=30, Ichimoku
+# ~52). Scanning 5000 bars x hundreds of strategies pushed one scan to 11
+# min — longer than 2 M5 bars. 600 keeps every indicator warm and cuts scan
+# time ~8x, so hundreds of deployed strategies stay in sync with the market.
+M5_BARS_LOOKBACK = 600
 
 
 class PaperTradeAgent(BaseAgent):

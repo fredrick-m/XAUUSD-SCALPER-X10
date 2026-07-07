@@ -301,20 +301,12 @@ class PaperTradeAgent(BaseAgent):
 
             self._active_strategies.append(dict(row))
 
-        # Deployment cap: top 5 per family (rows arrive ordered by PF desc).
-        # Hundreds of clones of one plateau are ONE edge — deploying them all
-        # is redundancy, not diversification. Breadth itself is SAFE: the
-        # gatekeeper funnel (1 position/strategy, entry-burst window,
-        # portfolio heat scaled to the balance) throttles live exposure.
-        capped = []
-        family_count = {}
-        for s in self._active_strategies:
-            fam = s.get("family") or s["id"]
-            if family_count.get(fam, 0) >= 5:
-                continue
-            family_count[fam] = family_count.get(fam, 0) + 1
-            capped.append(s)
-        self._active_strategies = capped
+        # NO deployment cap: everything deployable deploys (owner's call).
+        # Deployment only decides who WATCHES the market; live exposure is
+        # throttled downstream by the gatekeeper funnel — 1 position per
+        # strategy, entry-burst window (2/direction/15min), portfolio heat
+        # capped at 25% of the CURRENT balance, directional bias, margin,
+        # news blackout and the circuit breaker. Each agent does its job.
 
         if self._active_strategies or skipped_family:
             ids = [s["id"] for s in self._active_strategies]

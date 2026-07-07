@@ -114,8 +114,9 @@ def api_summary():
     agents_total = _count(db, "SELECT COUNT(*) AS c FROM agent_registry")
     total_strategies = _count(db, "SELECT COUNT(*) AS c FROM strategies")
     validated = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='validated'")
-    # Deployable = validated + walk-forward + holdout. The live bench is
-    # further capped at top-3 per family by paper_trade.
+    # Deployable = validated + walk-forward + holdout. No family cap:
+    # everything deployable is deployed; the gatekeeper funnel throttles
+    # live exposure. So deployed == deployable here.
     deployable = _count(
         db,
         "SELECT COUNT(*) AS c FROM strategies "
@@ -126,16 +127,7 @@ def api_summary():
         "SELECT COUNT(DISTINCT family) AS c FROM strategies "
         "WHERE status='validated' AND walk_forward_passed=1",
     )
-    # Same top-5-per-family rule as paper_trade._load_active_strategies
-    deployed = _count(
-        db,
-        "SELECT COUNT(*) AS c FROM ("
-        "  SELECT id, ROW_NUMBER() OVER ("
-        "    PARTITION BY family ORDER BY best_profit_factor DESC"
-        "  ) AS rn FROM strategies "
-        "  WHERE status='validated' AND walk_forward_passed=1"
-        ") WHERE rn <= 5",
-    )
+    deployed = deployable
     rejected = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='rejected'")
     fragile = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='fragile'")
     candidate = _count(db, "SELECT COUNT(*) AS c FROM strategies WHERE status='candidate'")

@@ -1248,13 +1248,22 @@ class TemplateFactory(BaseAgent):
         generated = 0
 
         for _ in range(batch_size):
-            template = self._pick_template()
-            family = template["family"]
-            all_ranges = {**BASE_PARAMS, **template["extra_params"]}
-            params = self._random_params(all_ranges)
-
-            strategy_id = self._next_id()
-            code = self._build_code(strategy_id, template, params)
+            # 1 in 4: a MULTI-SETUP strategy — several distinct entry patterns
+            # OR'd together, each strict (AND) inside. Quality per setup +
+            # frequency across setups. Generalizes the proven I003 OR-logic.
+            if random.random() < 0.25:
+                strategy_id = self._next_id()
+                built = self._build_multisetup_code(strategy_id)
+                if built is None:
+                    continue
+                code, params, family = built
+            else:
+                template = self._pick_template()
+                family = template["family"]
+                all_ranges = {**BASE_PARAMS, **template["extra_params"]}
+                params = self._random_params(all_ranges)
+                strategy_id = self._next_id()
+                code = self._build_code(strategy_id, template, params)
 
             is_valid, error = validate_strategy_code(code)
             if not is_valid:
@@ -1487,6 +1496,65 @@ class TemplateFactory(BaseAgent):
                 params[key] = round(random.uniform(lo, hi), 4)
         params["logic"] = random.choice(TemplateFactory.LOGIC_MODES)
         return params
+
+    def _build_multisetup_code(self, strategy_id: str):
+        """Build a MULTI-SETUP strategy: 2-3 distinct entry patterns OR'd
+        together, each strict (AND) internally, all under the mandatory
+        trend filter. Fires when ANY quality setup appears — quality per
+        setup, frequency across setups. Returns (code, params, family).
+
+        long  = uptrend  & ( (setupA triggers) | (setupB triggers) | ... )
+        short = downtrend & ( (setupA triggers) | (setupB triggers) | ... )
+        """
+        # Prefer proven families for at least one setup, mix in variety
+        proven = [t for t in TEMPLATES if t["family"] in
+                  ("hybrid_supertrend_rsi", "rsi_pullback", "rsi_bb_combo",
+                   "ema_bounce", "supertrend", "macd_histogram")]
+        pool = proven + TEMPLATES
+        k = random.choice([2, 2, 3])
+        chosen = random.sample(TEMPLATES, k)
+        if proven and not any(t["family"] in
+                              {p["family"] for p in proven} for t in chosen):
+            chosen[0] = random.choice(proven)
+
+        indicators, long_groups, short_groups = [], [], []
+        ranges = dict(BASE_PARAMS)
+        seen_ind = set()
+        for t in chosen:
+            for line in t["indicators"]:
+                if line not in seen_ind:
+                    indicators.append(line)
+                    seen_ind.add(line)
+            ranges.update(t.get("extra_params", {}))
+            _, long_trig = self._split_conditions(t["long"])
+            _, short_trig = self._split_conditions(t["short"])
+            if long_trig:
+                long_groups.append("(" + " & ".join(long_trig) + ")")
+            if short_trig:
+                short_groups.append("(" + " & ".join(short_trig) + ")")
+
+        if len(long_groups) < 2 or len(short_groups) < 2:
+            return None  # need at least 2 setups to be a real multi-setup
+
+        params = self._random_params(ranges)
+        params["logic"] = "and"  # combiner unused; OR is baked into the groups
+        params["setups"] = [t["family"] for t in chosen]
+
+        indicator_lines = "\n".join(f"    {line}" for line in indicators)
+        long_expr = "uptrend & (" + " | ".join(long_groups) + ")"
+        short_expr = "downtrend & (" + " | ".join(short_groups) + ")"
+        family = "multisetup_" + "_".join(sorted({t["family"][:6] for t in chosen}))
+
+        code = STRATEGY_TEMPLATE
+        code = code.replace("__ID__", strategy_id)
+        code = code.replace("__FAMILY__", family)
+        code = code.replace("__PARAMS__", repr(params))
+        code = code.replace("__INDICATORS__", indicator_lines)
+        code = code.replace("__LONG_TREND__", long_expr)
+        code = code.replace("__SHORT_TREND__", short_expr)
+        code = code.replace("__LONG_TRIG__", "")   # OR-of-groups already in trend expr
+        code = code.replace("__SHORT_TRIG__", "")
+        return code, params, family
 
     def _build_code(self, strategy_id: str, template: dict, params: dict) -> str:
         """Fill the STRATEGY_TEMPLATE placeholders and return source code."""

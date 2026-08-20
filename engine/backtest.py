@@ -9,6 +9,7 @@ Execution assumptions
 - Entry at Open of bar N+1 (no same-bar look-ahead)
 - Spread and adverse slippage charged
 - SL wins ties when SL and TP are both touched in one bar
+- Intrabar SL/TP is evaluated before any end-of-bar time exit
 - Gap-aware stop fills
 - Trailing changes become effective only after the bar that raised the stop
 - Floating-equity drawdown
@@ -24,7 +25,7 @@ separately. This is a research measurement, not a promise of future returns.
 """
 
 import math
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -98,8 +99,8 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def dynamic_lot(balance: float, sl_distance: float, risk_pct: float) -> float:
     """Position size from account balance, stop distance and risk fraction."""
-    if sl_distance <= 0 or balance <= 0:
-        return MIN_LOT
+    if sl_distance <= 0 or balance <= 0 or risk_pct <= 0:
+        return 0.0
     lot = (balance * risk_pct) / (sl_distance * PIP_VALUE)
     return max(MIN_LOT, min(round(lot, 3), MAX_LOT))
 
@@ -210,9 +211,6 @@ def compute_x10_window_metrics(
         for tr in records:
             if tr["entry_day"] < start:
                 continue
-            # Records are ordered primarily by exit_day, not entry_day. A
-            # later record may therefore still have an entry inside this
-            # window; never break on entry_day here.
             if tr["entry_day"] > end:
                 continue
             if tr["exit_day"] > end:
@@ -307,7 +305,7 @@ def run_simulation(
     sl = 0.0
     tp = 0.0
     direction = 0
-    current_lot = MIN_LOT
+    current_lot = 0.0
     initial_risk = 0.0
     bars_in_trade = 0
     entry_bar_idx = -1
@@ -383,10 +381,11 @@ def run_simulation(
             sl_distance = abs(entry_px - sl)
             if sl_distance > 0:
                 current_lot = dynamic_lot(balance, sl_distance, risk_pct)
-                initial_risk = sl_distance
-                in_trade = True
-                bars_in_trade = 0
-                entry_bar_idx = i
+                if current_lot > 0:
+                    initial_risk = sl_distance
+                    in_trade = True
+                    bars_in_trade = 0
+                    entry_bar_idx = i
             pending_entry = False
 
         if in_trade:
@@ -395,28 +394,30 @@ def run_simulation(
             bar_low = arr_low[i]
             bar_open = arr_open[i]
 
-            if max_bars_in_trade > 0 and bars_in_trade >= max_bars_in_trade:
+            if direction == 1:
+                hit_sl = bar_low <= sl
+                hit_tp = bar_high >= tp
+            else:
+                hit_sl = bar_high >= sl
+                hit_tp = bar_low <= tp
+
+            # Conservative intrabar ordering. If a stop/target was touched on
+            # the timeout bar, that market event happened before the bar close
+            # used for a time exit. SL keeps tie priority over TP.
+            if hit_sl:
+                exit_px = (
+                    min(sl, bar_open) - slippage
+                    if direction == 1
+                    else max(sl, bar_open) + bar_spread + slippage
+                )
+                close_trade(profit(entry_px, exit_px, direction, current_lot), i)
+            elif hit_tp:
+                exit_px = tp - slippage if direction == 1 else tp + bar_spread + slippage
+                close_trade(profit(entry_px, exit_px, direction, current_lot), i)
+            elif max_bars_in_trade > 0 and bars_in_trade >= max_bars_in_trade:
                 raw_exit = arr_close[i]
                 exit_px = raw_exit - slippage if direction == 1 else raw_exit + bar_spread + slippage
                 close_trade(profit(entry_px, exit_px, direction, current_lot), i)
-            else:
-                if direction == 1:
-                    hit_sl = bar_low <= sl
-                    hit_tp = bar_high >= tp
-                else:
-                    hit_sl = bar_high >= sl
-                    hit_tp = bar_low <= tp
-
-                if hit_sl:
-                    exit_px = (
-                        min(sl, bar_open) - slippage
-                        if direction == 1
-                        else max(sl, bar_open) + bar_spread + slippage
-                    )
-                    close_trade(profit(entry_px, exit_px, direction, current_lot), i)
-                elif hit_tp:
-                    exit_px = tp - slippage if direction == 1 else tp + bar_spread + slippage
-                    close_trade(profit(entry_px, exit_px, direction, current_lot), i)
 
             if trailing_stop and in_trade:
                 if direction == 1:
@@ -448,10 +449,7 @@ def run_simulation(
                 pending_dir = int(sig)
 
         if in_trade:
-            if direction == 1:
-                mark_px = arr_close[i]
-            else:
-                mark_px = arr_close[i] + bar_spread
+            mark_px = arr_close[i] if direction == 1 else arr_close[i] + bar_spread
             equity = balance + profit(entry_px, mark_px, direction, current_lot)
         else:
             equity = balance
@@ -490,7 +488,6 @@ def run_simulation(
     )
 
     x10 = compute_x10_window_metrics(df, trade_records)
-
     metrics = {
         "total_trades": n,
         "win_rate": round(win_rate, 4),

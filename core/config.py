@@ -244,6 +244,11 @@ X10_TARGET_BALANCE = INITIAL_BALANCE * X10_TARGET_MULTIPLE
 # Monte Carlo calls an account "ruined" once 80% of starting capital is lost.
 MC_RUIN_BALANCE_FRACTION = 0.20
 
+# Every backtest result records this value in backtest_results.config. Changing
+# it intentionally invalidates older aggregate/derived evidence and schedules
+# a fresh pass through the validation pipeline without deleting historical rows.
+BACKTEST_METRIC_VERSION = "x10_10d_v2"
+
 # ── Backtest defaults ──────────────────────────────
 PIP_VALUE = 100.0
 DEFAULT_RISK_PCT = 0.04

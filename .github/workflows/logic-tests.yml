@@ -36,6 +36,8 @@ jobs:
             agents/backtest_runner.py \
             agents/validation_v2.py \
             agents/correlation_agent.py \
+            agents/monte_carlo.py \
+            agents/sensitivity_agent.py \
             agents/risk_manager.py \
             agents/signal_gatekeeper.py \
             agents/strategy_factory.py \

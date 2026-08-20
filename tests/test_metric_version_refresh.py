@@ -5,7 +5,7 @@ from core.db import Database
 from scripts.refresh_x10_metric_version import refresh
 
 
-def test_metric_refresh_archives_requeues_and_is_idempotent(tmp_path):
+def test_metric_refresh_archives_requeues_stamps_and_is_idempotent(tmp_path):
     db = Database(tmp_path / "test.sqlite")
     try:
         db.init_schema()
@@ -57,9 +57,26 @@ def test_metric_refresh_archives_requeues_and_is_idempotent(tmp_path):
         assert "sensitivity" not in config
         assert "portfolio_selected" not in config
 
+        # Simulate the existing runner inserting a fresh V2 result with
+        # config=None. The migration trigger must stamp it automatically.
+        db.execute(
+            "INSERT INTO backtest_results "
+            "(strategy_id, risk_pct, config, total_trades, win_rate, profit_factor, "
+            "max_drawdown, x10_count, final_balance, return_pct, blown_account) "
+            "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("S_TEST", 0.04, 150, 0.65, 1.5, 0.18, 1, 1200.0, 140.0, 0),
+        )
+        fresh = db.fetchone(
+            "SELECT config FROM backtest_results WHERE strategy_id='S_TEST'"
+        )
+        assert json.loads(fresh["config"])["metric_version"] == BACKTEST_METRIC_VERSION
+
         second = refresh(db)
         assert second["already_applied"] is True
         archived_again = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results_archive")
         assert archived_again["n"] == 1
+        # Re-running the same migration must not archive the new V2 row.
+        active_again = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results")
+        assert active_again["n"] == 1
     finally:
         db.close()

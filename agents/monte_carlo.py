@@ -2,14 +2,18 @@
 
 The model uses normalized fixed-fraction outcomes inferred from validated
 strategy statistics. It is comparative robustness evidence, not a promise of
-future returns.
+future returns. Results are deterministic for the same strategy/data/metrics
+and trade frequency is measured on the same selection window as backtesting.
 """
 
+import hashlib
 import json
 import math
 import random
 import traceback
 from typing import Optional
+
+import pandas as pd
 
 from agents.base_agent import BaseAgent
 from agents.backtest_runner import BacktestRunner
@@ -19,6 +23,7 @@ from core.config import (
     X10_HORIZON_DAYS,
     X10_TARGET_MULTIPLE,
     MC_RUIN_BALANCE_FRACTION,
+    HOLDOUT_MONTHS,
 )
 
 ANALYSIS_PER_FAMILY = 8
@@ -32,6 +37,22 @@ def _implied_reward_risk(win_rate: float, profit_factor: float) -> float:
     return max(0.25, min(float(rr), 10.0))
 
 
+def selection_trading_days(df: pd.DataFrame) -> int:
+    """Count weekdays in the exact pre-holdout selection window."""
+    if df is None or len(df) == 0 or "time" not in df.columns:
+        return 0
+    times = pd.to_datetime(df["time"], errors="coerce")
+    if times.isna().any():
+        return 0
+    holdout_start = times.iloc[-1] - pd.DateOffset(months=HOLDOUT_MONTHS)
+    h_idx = int((times < holdout_start).sum())
+    if h_idx < 5000 or (len(df) - h_idx) < 1000:
+        return 0
+    selection = times.iloc[:h_idx]
+    weekdays = selection[selection.dt.weekday < 5].dt.date
+    return max(1, int(pd.Series(weekdays).nunique())) if len(weekdays) else 0
+
+
 def monte_carlo_x10(
     win_rate: float,
     reward_risk: float,
@@ -42,6 +63,7 @@ def monte_carlo_x10(
     horizon_days: int = X10_HORIZON_DAYS,
     target_multiple: float = X10_TARGET_MULTIPLE,
     ruin_balance_fraction: float = MC_RUIN_BALANCE_FRACTION,
+    seed: Optional[int] = None,
 ) -> dict:
     """Estimate X10 and drawdown probabilities with fixed-fraction risk."""
     win_rate = max(0.0, min(float(win_rate), 1.0))
@@ -49,6 +71,7 @@ def monte_carlo_x10(
     risk_pct = max(0.0001, min(float(risk_pct), 0.50))
     trades_per_day = max(0.0, float(trades_per_day))
     horizon_trades = max(1, int(round(trades_per_day * horizon_days)))
+    rng = random.Random(seed)
 
     target = initial_balance * target_multiple
     ruin_floor = initial_balance * ruin_balance_fraction
@@ -64,7 +87,7 @@ def monte_carlo_x10(
         hit_target = False
         ruined = False
         for _trade in range(horizon_trades):
-            if random.random() < win_rate:
+            if rng.random() < win_rate:
                 balance *= 1.0 + risk_pct * reward_risk
             else:
                 balance *= 1.0 - risk_pct
@@ -99,6 +122,7 @@ def monte_carlo_x10(
     p95_dd_10d = round(percentile(max_dds, 0.95), 4)
     return {
         "model": "fixed_fraction_edge_model_v2",
+        "seed": seed,
         "initial_balance": round(initial_balance, 2),
         "target_balance": round(target, 2),
         "horizon_days": int(horizon_days),
@@ -123,7 +147,7 @@ def monte_carlo_x10(
             "independent trades",
             "stationary win rate and reward/risk",
             "fixed-fraction compounding",
-            "trade frequency extrapolated from historical sample",
+            "trade frequency from pre-holdout selection history",
         ],
     }
 
@@ -141,7 +165,7 @@ class MonteCarlo(BaseAgent):
         self._bt_runner = BacktestRunner(self.db)
         self._bt_runner.setup()
         self.logger.info(
-            f"Monte Carlo V2 ready — up to {ANALYSIS_PER_FAMILY} variants/family"
+            f"Monte Carlo V2 ready — deterministic, up to {ANALYSIS_PER_FAMILY} variants/family"
         )
 
     def tick(self):
@@ -162,12 +186,6 @@ class MonteCarlo(BaseAgent):
         return self.get_config("tick_interval", 300)
 
     def _get_untested_strategies(self) -> list:
-        """WF variants needing MC, including portfolio reserves.
-
-        The analysis breadth matches Portfolio V5's max-per-family capacity so
-        the system can build a portfolio larger than 100 strategies instead of
-        being hard-capped by a top-3 evidence bottleneck.
-        """
         per_family = max(1, int(self.get_config("analysis_per_family", ANALYSIS_PER_FAMILY)))
         rows = self.db.fetchall(
             "SELECT id, best_config FROM ("
@@ -201,7 +219,7 @@ class MonteCarlo(BaseAgent):
 
     def _latest_metrics(self, strategy_id: str) -> Optional[dict]:
         row = self.db.fetchone(
-            "SELECT total_trades, win_rate, profit_factor, risk_pct "
+            "SELECT total_trades, win_rate, profit_factor, risk_pct, data_hash "
             "FROM backtest_results WHERE strategy_id = ? "
             "ORDER BY run_at DESC, id DESC LIMIT 1",
             (strategy_id,),
@@ -209,26 +227,30 @@ class MonteCarlo(BaseAgent):
         return dict(row) if row else None
 
     def _reward_risk(self, strategy_id: str, wr: float, pf: float) -> float:
-        try:
-            module = self._bt_runner._load_strategy_module(strategy_id)
-            params = getattr(module, "PARAMS", {}) if module else {}
-            sl_atr = float(params.get("sl_atr", 0.0))
-            tp_atr = float(params.get("tp_atr", 0.0))
-            if sl_atr > 0 and tp_atr > 0:
-                return max(0.25, min(tp_atr / sl_atr, 10.0))
-        except Exception:
-            pass
+        # Realized PF/WR better represents the full validated exit machinery
+        # (time exits, trailing, spread/slippage) than the nominal TP/SL ratio.
         return _implied_reward_risk(wr, pf)
 
-    def _trading_days_in_dataset(self) -> int:
+    def _trading_days_in_selection(self) -> int:
         try:
             df = self._bt_runner._load_data_m5()
-            if df is None or "time" not in df.columns or len(df) == 0:
-                return 0
-            dates = df.loc[df["time"].dt.weekday < 5, "time"].dt.date
-            return max(1, int(dates.nunique()))
+            return selection_trading_days(df)
         except Exception:
             return 0
+
+    @staticmethod
+    def _seed_for(strategy_id: str, metrics: dict) -> int:
+        material = "|".join(
+            [
+                strategy_id,
+                str(metrics.get("data_hash") or ""),
+                str(metrics.get("total_trades") or 0),
+                f"{float(metrics.get('win_rate') or 0.0):.8f}",
+                f"{float(metrics.get('profit_factor') or 0.0):.8f}",
+                f"{float(metrics.get('risk_pct') or 0.0):.8f}",
+            ]
+        )
+        return int(hashlib.sha256(material.encode("utf-8")).hexdigest()[:16], 16)
 
     def _run_mc_for_strategy(self, strategy_id: str):
         metrics = self._latest_metrics(strategy_id)
@@ -243,15 +265,16 @@ class MonteCarlo(BaseAgent):
             self.logger.warning(f"Insufficient metrics for {strategy_id}; MC skipped")
             return
 
-        trading_days = self._trading_days_in_dataset()
+        trading_days = self._trading_days_in_selection()
         if trading_days <= 0:
-            self.logger.warning(f"No trading-day denominator for {strategy_id}; MC skipped")
+            self.logger.warning(f"No selection-window trading-day denominator for {strategy_id}; MC skipped")
             return
 
         reward_risk = self._reward_risk(strategy_id, wr, pf)
         trades_per_day = trades / trading_days
         risk_pct = float(metrics.get("risk_pct") or DEFAULT_RISK_PCT)
         n_sims = int(self.get_config("n_simulations", 10000))
+        seed = self._seed_for(strategy_id, metrics)
         result = monte_carlo_x10(
             win_rate=wr,
             reward_risk=reward_risk,
@@ -262,11 +285,10 @@ class MonteCarlo(BaseAgent):
             horizon_days=int(self.get_config("horizon_days", X10_HORIZON_DAYS)),
             target_multiple=float(self.get_config("target_multiple", X10_TARGET_MULTIPLE)),
             ruin_balance_fraction=MC_RUIN_BALANCE_FRACTION,
+            seed=seed,
         )
 
-        row = self.db.fetchone(
-            "SELECT best_config FROM strategies WHERE id = ?", (strategy_id,)
-        )
+        row = self.db.fetchone("SELECT best_config FROM strategies WHERE id = ?", (strategy_id,))
         config = {}
         if row and row["best_config"]:
             try:

@@ -1,13 +1,14 @@
-"""Fail-closed readiness check before starting MT5 demo execution.
+"""Fail-closed readiness check before enabling MT5 demo execution.
 
-This script NEVER sends an order. It only verifies the prerequisites that must
-be true before paper_trade is allowed to execute XAUUSD demo signals.
+This script NEVER sends an order and does NOT enable execution. It checks the
+prerequisites that must be true before ``scripts/demo_switch.py enable`` can
+turn on new MT5 demo entries.
 
 Usage:
     python scripts/demo_preflight.py
 
 Exit codes:
-    0 = READY
+    0 = READY TO ENABLE
     2 = BLOCKED
 """
 from __future__ import annotations
@@ -168,15 +169,36 @@ def _check_news(db: Database) -> tuple[bool, str]:
 
 
 def _check_risk(db: Database) -> tuple[bool, str]:
+    """Check risk health without requiring the deliberate execution switch ON."""
     try:
-        from agents.risk_manager import get_risk_readiness, get_effective_risk_pct
-        ready, reason = get_risk_readiness(db)
-        if not ready:
-            return False, reason
-        risk = get_effective_risk_pct(db)
-        if risk <= 0:
-            return False, "effective risk is zero"
-        return True, f"Risk Engine ready, effective risk/trade={risk:.2%}"
+        from agents.risk_manager import RISK_PROFILES, DEFAULT_RISK_PROFILE
+        row = db.fetchone("SELECT config FROM agent_registry WHERE id='risk_manager'")
+        if not row:
+            return False, "risk_manager agent not registered"
+        cfg = _json(row["config"])
+        state = cfg.get("risk_state", {})
+        if not state:
+            return False, "risk state missing"
+        if not state.get("equity_ready", False):
+            return False, "MT5 equity not anchored"
+        if state.get("equity_anchor_source") != "mt5":
+            return False, "equity anchor is not MT5"
+        if state.get("circuit_breaker_active", False):
+            return False, f"circuit breaker active ({state.get('circuit_breaker_scope', 'unknown')})"
+        equity = float(state.get("current_equity") or 0.0)
+        if equity <= 0:
+            return False, "current risk equity invalid"
+        scaling = float(state.get("current_scaling") or 0.0)
+        if scaling <= 0:
+            return False, "risk scaling is zero"
+        profile_name = cfg.get("risk_profile", DEFAULT_RISK_PROFILE)
+        profile = RISK_PROFILES.get(profile_name, RISK_PROFILES[DEFAULT_RISK_PROFILE])
+        potential_risk = float(profile["risk_per_trade"]) * scaling
+        enabled = cfg.get("demo_execution_enabled") is True
+        return True, (
+            f"Risk Engine healthy; potential risk/trade={potential_risk:.2%}; "
+            f"execution switch={'ON' if enabled else 'OFF (safe)'}"
+        )
     except Exception as exc:
         return False, f"Risk Engine check failed: {exc}"
 
@@ -199,12 +221,10 @@ def _check_mt5() -> tuple[bool, str]:
         balance = float(getattr(account, "balance", 0.0) or 0.0)
         if equity <= 0 or balance <= 0:
             return False, f"invalid demo equity/balance ({equity}/{balance})"
-
         if hasattr(account, "trade_allowed") and not bool(account.trade_allowed):
             return False, "account trade_allowed is false"
         if hasattr(account, "trade_expert") and not bool(account.trade_expert):
             return False, "account automated trading is disabled"
-
         if not mt5.symbol_select("XAUUSD", True):
             return False, f"XAUUSD symbol_select failed: {mt5.last_error()}"
         info = mt5.symbol_info("XAUUSD")
@@ -213,7 +233,6 @@ def _check_mt5() -> tuple[bool, str]:
             return False, "XAUUSD symbol/tick unavailable"
         if float(getattr(tick, "ask", 0.0) or 0.0) <= 0 or float(getattr(tick, "bid", 0.0) or 0.0) <= 0:
             return False, "XAUUSD bid/ask invalid"
-
         return True, (
             f"demo account #{getattr(account, 'login', '?')} equity=${equity:.2f} "
             f"balance=${balance:.2f} XAUUSD={tick.bid:.2f}/{tick.ask:.2f}"
@@ -237,13 +256,21 @@ def run_preflight(db: Database) -> tuple[bool, list[tuple[str, bool, str]]]:
         except Exception as exc:
             ok, detail = False, f"unexpected error: {exc}"
         results.append((name, bool(ok), str(detail)))
-
     try:
         mt5_ok, mt5_detail = _check_mt5()
     except Exception as exc:
         mt5_ok, mt5_detail = False, f"unexpected error: {exc}"
     results.append(("mt5_demo", bool(mt5_ok), str(mt5_detail)))
     return all(ok for _, ok, _ in results), results
+
+
+def print_results(ready: bool, results: list[tuple[str, bool, str]]) -> None:
+    print("=" * 68)
+    print(f"DEMO PREFLIGHT: {'READY TO ENABLE' if ready else 'BLOCKED'}")
+    print("=" * 68)
+    for name, ok, detail in results:
+        print(f"[{'OK' if ok else 'BLOCK'}] {name}: {detail}")
+    print("=" * 68)
 
 
 def main() -> int:
@@ -253,15 +280,9 @@ def main() -> int:
         ready, results = run_preflight(db)
     finally:
         db.close()
-
-    print("=" * 68)
-    print(f"DEMO PREFLIGHT: {'READY' if ready else 'BLOCKED'}")
-    print("=" * 68)
-    for name, ok, detail in results:
-        print(f"[{'OK' if ok else 'BLOCK'}] {name}: {detail}")
-    print("=" * 68)
+    print_results(ready, results)
     if ready:
-        print("No order was sent. Preconditions for MT5 demo execution are satisfied.")
+        print("No order was sent and execution was NOT enabled.")
         return 0
     print("No order was sent. Fix every BLOCK item before enabling demo execution.")
     return 2

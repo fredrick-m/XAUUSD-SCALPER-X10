@@ -1,382 +1,314 @@
-"""Evolution Agent: optimizes parameters, creates mutated/crossover variants of top strategies."""
+"""Evolution Agent V2: mutate proven edges without contaminating strategy PARAMS."""
 import importlib.util
 import json
 import random
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 from agents.base_agent import BaseAgent
 from core.config import STRATEGIES_DIR
-from engine.optimizer import composite_score
 
 
 class EvolutionAgent(BaseAgent):
-    """Selects top strategies, optimizes params, creates evolved variants."""
+    """Create directed descendants of statistically promising strategies."""
 
     name = "evolution_agent"
 
     def __init__(self, db):
         super().__init__(agent_id="evolution_agent", db=db)
 
-    # ── lifecycle ──────────────────────────────────────────────────────────────
-
     def setup(self):
-        self.logger.info("Evolution Agent ready")
+        self.logger.info("Evolution Agent V2 ready")
 
     def tick(self):
-        # Only evolve strategies with PF > 0.8 (worth iterating on)
-        top = self._select_top_strategies(limit=10)
+        top = self._select_top_strategies(limit=12)
         if not top:
-            self.logger.info("No strategies to evolve yet")
+            self.logger.info("No strategies worth evolving yet")
             return
 
-        # Skip if backtest queue is too deep — don't flood
-        # Only count T-series and new E-series (exclude legacy E0001-E3392)
         pending = self.db.fetchone(
-            "SELECT COUNT(*) as cnt FROM strategies s "
-            "LEFT JOIN backtest_results b ON s.id = b.strategy_id "
-            "WHERE s.status = 'candidate' AND b.id IS NULL "
-            "AND (s.id LIKE 'T%' OR s.id > 'E3392')"
+            "SELECT COUNT(*) AS cnt FROM strategies s "
+            "LEFT JOIN backtest_results b ON s.id=b.strategy_id "
+            "WHERE s.status='candidate' AND b.id IS NULL AND s.created_by='evolution_agent'"
         )
-        # 2000 (was 200): the factory keeps the queue topped up, so a low
-        # threshold starved evolution forever. Directed children of proven
-        # winners deserve queue slots more than fresh random candidates.
-        if pending and pending["cnt"] > 2000:
-            self.logger.info(f"Backtest queue has {pending['cnt']} pending — skipping evolution tick")
-            self._retire_poor_strategies(min_runs=3, max_score=0.3)
+        max_pending = int(self.get_config("max_pending", 300))
+        if pending and int(pending["cnt"] or 0) >= max_pending:
+            self.logger.info(f"Evolution queue full ({pending['cnt']}/{max_pending})")
             return
 
-        self.logger.info(f"Selected {len(top)} strategies for evolution")
+        mutations = 0
+        # Spread mutations across different families when possible.
+        chosen = []
+        used_families = set()
+        for s in top:
+            fam = s.get("family") or "unknown"
+            if fam not in used_families:
+                chosen.append(s)
+                used_families.add(fam)
+            if len(chosen) >= 6:
+                break
+        if len(chosen) < 6:
+            for s in top:
+                if s not in chosen:
+                    chosen.append(s)
+                if len(chosen) >= 6:
+                    break
 
-        # 1. Mutation: create 1 mutated copy of each top-5 strategy (5 total).
-        # DIRECTED evolution: a parent with strong quality but a small trade
-        # count (the probation profile) gets frequency-targeted mutations —
-        # the goal is the same edge firing more often, not a different edge.
-        mutations_created = 0
-        for strat in top[:5]:
-            strategy_id = strat["id"]
-            config = self._load_strategy_config(strategy_id)
-            if config is None:
+        for strat in chosen:
+            sid = strat["id"]
+            params = self._load_strategy_params(sid)
+            if not params:
                 continue
 
-            parent_pf = strat.get("best_profit_factor") or 0.0
-            trades_row = self.db.fetchone(
-                "SELECT MAX(total_trades) AS t FROM backtest_results WHERE strategy_id = ?",
-                (strategy_id,),
-            )
-            parent_trades = (trades_row["t"] or 0) if trades_row else 0
+            trades = int(strat.get("total_trades") or 0)
+            pf = float(strat.get("best_profit_factor") or 0.0)
+            p_x10 = float(strat.get("p_x10_10d") or 0.0)
 
-            if parent_pf >= 1.5 and 0 < parent_trades < 100:
-                # Frequency-directed: gentle mutations on the logic params,
-                # aggressive relaxation of the levers that actually control
-                # signal rate. Measured truth: for these families cooldown/
-                # session cost ~0 signals — rarity comes from EXTREME ENTRY
-                # THRESHOLDS. So we relax those toward less-extreme values
-                # (RSI 26->~33, bands 2.3->~1.9, ADX 30->~25); validation
-                # still guards quality, so noise can't slip through.
-                mutated = self._mutate_params(config, mutation_rate=0.4, mutation_range=0.15)
-                mutated = self._relax_entry_thresholds(mutated)
-                if "cooldown" in mutated:
-                    mutated["cooldown"] = max(1, int(mutated["cooldown"] * 0.5))
-                if "session_start" in mutated:
-                    mutated["session_start"] = max(2, int(mutated["session_start"]) - random.randint(1, 3))
-                if "session_end" in mutated:
-                    mutated["session_end"] = min(23, int(mutated["session_end"]) + random.randint(1, 3))
-                desc = f"Frequency-directed mutation of {strategy_id} (PF {parent_pf:.2f}, {parent_trades} trades)"
+            # For high-quality but low-frequency edges, first try to increase
+            # signal frequency without destroying the core hypothesis.
+            if pf >= 1.5 and 0 < trades < 100:
+                child = self._mutate_params(params, 0.35, 0.12)
+                child = self._relax_entry_thresholds(child)
+                desc = f"Frequency-directed V2 mutation of {sid}"
             else:
-                mutated = self._mutate_params(config, mutation_rate=0.6, mutation_range=0.3)
-                desc = f"Mutation of {strategy_id}"
+                # Strong x10 candidates get gentler local search; ordinary
+                # promising parents get broader exploration.
+                if p_x10 >= 0.05:
+                    child = self._mutate_params(params, 0.35, 0.15)
+                else:
+                    child = self._mutate_params(params, 0.55, 0.25)
+                desc = f"Edge-directed V2 mutation of {sid}"
 
             evo_id = self._next_evolution_id()
-            self._create_evolved_strategy(
-                evo_id=evo_id,
-                parent_id=strategy_id,
-                parent_generation=strat.get("generation", 1),
-                params=mutated,
-                family=strat.get("family", "evolved"),
-                description=desc,
-            )
-            mutations_created += 1
+            if self._create_evolved_strategy(
+                evo_id, sid, int(strat.get("generation") or 1), child,
+                strat.get("family") or "evolved", desc,
+            ):
+                mutations += 1
 
-        # 2. Crossover: pair top-2 strategies (1 child)
-        crossovers_created = 0
-        if len(top) >= 2:
-            parent_a, parent_b = top[0], top[1]
-            config_a = self._load_strategy_config(parent_a["id"])
-            config_b = self._load_strategy_config(parent_b["id"])
-            if config_a is not None and config_b is not None:
-                child_params = self._crossover_params(config_a, config_b)
-                evo_id = self._next_evolution_id()
-                max_gen = max(parent_a.get("generation", 1), parent_b.get("generation", 1))
-                self._create_evolved_strategy(
-                    evo_id=evo_id,
-                    parent_id=parent_a["id"],
-                    parent_generation=max_gen,
-                    params=child_params,
-                    family=parent_a.get("family", "crossover"),
-                    description=f"Crossover of {parent_a['id']} x {parent_b['id']}",
-                )
-                crossovers_created += 1
+        # Crossover is allowed only inside the SAME family. Mixing unrelated
+        # parameter vocabularies was generating nonsensical children.
+        crossovers = 0
+        pair = self._best_same_family_pair(top)
+        if pair:
+            a, b = pair
+            pa = self._load_strategy_params(a["id"])
+            pb = self._load_strategy_params(b["id"])
+            if pa and pb:
+                shared = set(pa) & set(pb)
+                # Require meaningful parameter overlap before crossover.
+                overlap = len(shared) / max(1, min(len(pa), len(pb)))
+                if overlap >= 0.60:
+                    child = self._crossover_params(pa, pb)
+                    evo_id = self._next_evolution_id()
+                    if self._create_evolved_strategy(
+                        evo_id, a["id"], max(int(a.get("generation") or 1), int(b.get("generation") or 1)),
+                        child, a.get("family") or "crossover",
+                        f"Same-family V2 crossover {a['id']} x {b['id']}",
+                    ):
+                        crossovers = 1
 
-        # 3. Retire consistently poor strategies
-        retired = self._retire_poor_strategies(min_runs=3, max_score=0.3)
-
-        self.emit_event("info",
-            f"Evolution tick: {mutations_created} mutations, {crossovers_created} crossovers, "
-            f"{len(retired)} retired",
-            metadata={"mutations": mutations_created, "crossovers": crossovers_created, "retired": retired},
+        self.emit_event(
+            "info",
+            f"Evolution V2: {mutations} mutations, {crossovers} crossover",
+            metadata={"mutations": mutations, "crossovers": crossovers},
         )
 
     def tick_interval(self) -> float:
         return self.get_config("tick_interval", 120)
 
-    # ── selection ──────────────────────────────────────────────────────────────
-
-    def _select_top_strategies(self, limit: int = 10) -> List[dict]:
-        """
-        Select top strategies by composite score, using the latest backtest
-        results. Returns list of dicts with strategy info + 'score' key.
-        Only includes strategies whose source files still exist.
-        """
+    def _select_top_strategies(self, limit: int = 12) -> List[dict]:
+        """Rank parents by edge + robustness + X10 potential - ruin."""
         rows = self.db.fetchall(
-            "SELECT s.id, s.family, s.generation, s.file_path, "
-            "s.best_win_rate, s.best_profit_factor, s.best_max_drawdown, "
-            "s.best_x10_count, s.best_final_balance, s.best_config "
-            "FROM strategies s "
-            "WHERE s.status NOT IN ('retired', 'deleted', 'rejected') "
-            "AND s.best_profit_factor IS NOT NULL"
+            "SELECT s.id, s.family, s.generation, s.file_path, s.best_win_rate, "
+            "s.best_profit_factor, s.best_max_drawdown, s.best_config, "
+            "MAX(b.total_trades) AS total_trades "
+            "FROM strategies s LEFT JOIN backtest_results b ON b.strategy_id=s.id "
+            "WHERE s.status IN ('validated','portfolio_reserve','candidate') "
+            "AND s.best_profit_factor IS NOT NULL "
+            "GROUP BY s.id"
         )
-
         scored = []
-        for r in rows:
-            entry = dict(r)
-            # Skip strategies with missing files
-            fp = entry.get("file_path")
-            if fp and not Path(fp).exists():
+        for row in rows:
+            s = dict(row)
+            if not self._resolve_path(s.get("file_path"), s["id"]):
                 continue
-            metrics = {
-                "win_rate": entry["best_win_rate"] or 0.0,
-                "profit_factor": entry["best_profit_factor"] or 0.0,
-                "max_drawdown": entry["best_max_drawdown"] or 1.0,
-                "x10_count": entry["best_x10_count"] or 0,
-                "total_trades": 1,  # non-zero so score isn't auto-zeroed
-            }
-            score = composite_score(metrics)
-            entry["score"] = score
-            scored.append(entry)
+            pf = float(s.get("best_profit_factor") or 0.0)
+            wr = float(s.get("best_win_rate") or 0.0)
+            dd = float(s.get("best_max_drawdown") or 1.0)
+            if pf < 1.05 or wr <= 0:
+                continue
+
+            cfg = self._parse_json(s.get("best_config"))
+            mc = cfg.get("monte_carlo", {}) if isinstance(cfg, dict) else {}
+            p_x10 = float(mc.get("p_x10_10d", mc.get("p_x10", 0.0)) or 0.0)
+            p_ruin = float(mc.get("p_ruin_10d", mc.get("p_ruin", 0.0)) or 0.0)
+            p95dd = float(mc.get("p95_dd_10d", mc.get("p95_dd", dd)) or dd)
+
+            score = 0.0
+            score += min(max((pf - 1.0) / 1.5, 0.0), 1.0) * 35.0
+            score += min(max((wr - 0.50) / 0.30, 0.0), 1.0) * 20.0
+            score += max(0.0, 1.0 - dd / 0.35) * 15.0
+            score += min(p_x10 / 0.25, 1.0) * 20.0
+            score += max(0.0, 1.0 - p95dd / 0.50) * 10.0
+            score -= min(p_ruin / 0.10, 1.0) * 35.0
+            if cfg.get("probation"):
+                score -= 5.0
+
+            s["score"] = round(score, 4)
+            s["p_x10_10d"] = p_x10
+            s["p_ruin_10d"] = p_ruin
+            scored.append(s)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
-    # ── param manipulation ─────────────────────────────────────────────────────
+    @staticmethod
+    def _parse_json(value) -> dict:
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @staticmethod
+    def _resolve_path(file_path: Optional[str], strategy_id: str) -> Optional[Path]:
+        candidates = []
+        if file_path:
+            p = Path(file_path)
+            candidates.extend([p, STRATEGIES_DIR.parent / p])
+        candidates.append(STRATEGIES_DIR / f"strategy_{strategy_id.lower()}.py")
+        return next((p for p in candidates if p.exists()), None)
+
+    def _load_strategy_params(self, strategy_id: str) -> Optional[dict]:
+        """Load ONLY executable PARAMS from source; never best_config metadata."""
+        row = self.db.fetchone("SELECT file_path FROM strategies WHERE id=?", (strategy_id,))
+        if not row:
+            return None
+        path = self._resolve_path(row["file_path"], strategy_id)
+        if path is None:
+            return None
+        try:
+            spec = importlib.util.spec_from_file_location(f"strat_{strategy_id}", str(path))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            params = getattr(module, "PARAMS", None)
+            return dict(params) if isinstance(params, dict) else None
+        except Exception as exc:
+            self.logger.warning(f"Could not load PARAMS for {strategy_id}: {exc}")
+            return None
 
     @staticmethod
     def _relax_entry_thresholds(params: dict) -> dict:
-        """Nudge extreme entry thresholds toward less-extreme = more signals.
-
-        This is the true frequency lever for selective mean-reversion /
-        breakout families: an RSI<26 trigger is rare, RSI<33 far less so.
-        Oversold bounds rise, overbought bounds fall, band width and trend
-        floors shrink. Validation (WR/PF/DD, walk-forward, holdout) still
-        judges the result, so relaxing here can only propose — never approve.
-        """
         p = dict(params)
-        # Oversold entry bounds: raise toward the middle (more longs fire)
         for k in ("rsi_low", "mfi_low", "uo_low", "stoch_low", "cci_low"):
-            if k in p and isinstance(p[k], (int, float)):
-                p[k] = round(p[k] + random.uniform(4, 9), 4)
-        # Overbought entry bounds: lower toward the middle (more shorts fire)
+            if isinstance(p.get(k), (int, float)):
+                p[k] = round(p[k] + random.uniform(2, 6), 4)
         for k in ("rsi_high", "mfi_high", "uo_high", "stoch_high", "cci_high"):
-            if k in p and isinstance(p[k], (int, float)):
-                p[k] = round(p[k] - random.uniform(4, 9), 4)
-        # Band width / trend floors: shrink so crosses happen more often
-        if "bb_std" in p:
-            p["bb_std"] = round(max(1.2, p["bb_std"] - random.uniform(0.2, 0.5)), 4)
+            if isinstance(p.get(k), (int, float)):
+                p[k] = round(p[k] - random.uniform(2, 6), 4)
+        if isinstance(p.get("bb_std"), (int, float)):
+            p["bb_std"] = round(max(1.2, p["bb_std"] - random.uniform(0.1, 0.35)), 4)
         for k in ("adx_threshold", "adx_floor"):
-            if k in p and isinstance(p[k], (int, float)):
-                p[k] = int(max(15, p[k] - random.randint(3, 7)))
+            if isinstance(p.get(k), (int, float)):
+                p[k] = max(12, int(round(p[k] - random.uniform(2, 5))))
+        if isinstance(p.get("cooldown"), (int, float)):
+            p["cooldown"] = max(1, int(round(p["cooldown"] * random.uniform(0.6, 0.9))))
         return p
 
     @staticmethod
-    def _mutate_params(params: dict, mutation_rate: float = 0.5, mutation_range: float = 0.2) -> dict:
-        """
-        Create a mutated copy of params.
-
-        Each numeric param has `mutation_rate` probability of being mutated
-        by a random factor in [1 - mutation_range, 1 + mutation_range].
-        Non-numeric params are copied unchanged. Values are clamped to > 0.
-        """
-        mutated = {}
-        for key, value in params.items():
-            if isinstance(value, (int, float)) and random.random() < mutation_rate:
-                factor = 1.0 + random.uniform(-mutation_range, mutation_range)
-                new_val = value * factor
-                # Clamp to positive
-                new_val = max(new_val, abs(value) * 0.01) if value != 0 else new_val
-                # Preserve int type if original was int
-                mutated[key] = int(round(new_val)) if isinstance(value, int) else round(new_val, 6)
-            else:
-                mutated[key] = value
-        return mutated
-
-    @staticmethod
-    def _crossover_params(parent_a: dict, parent_b: dict) -> dict:
-        """
-        Uniform crossover: for each key, randomly pick from parent_a or parent_b.
-        Keys only in one parent are copied from that parent.
-        """
-        all_keys = set(parent_a.keys()) | set(parent_b.keys())
+    def _mutate_params(params: dict, mutation_rate: float, mutation_range: float) -> dict:
         child = {}
-        for key in all_keys:
-            if key in parent_a and key in parent_b:
-                child[key] = random.choice([parent_a[key], parent_b[key]])
-            elif key in parent_a:
-                child[key] = parent_a[key]
+        protected = {"sl_atr", "tp_atr"}
+        for key, value in params.items():
+            if isinstance(value, bool):
+                child[key] = value
+                continue
+            if isinstance(value, (int, float)) and random.random() < mutation_rate:
+                local_range = min(mutation_range, 0.15) if key in protected else mutation_range
+                factor = 1.0 + random.uniform(-local_range, local_range)
+                nv = value * factor
+                if value > 0:
+                    nv = max(nv, max(0.0001, value * 0.10))
+                child[key] = int(round(nv)) if isinstance(value, int) else round(float(nv), 6)
             else:
-                child[key] = parent_b[key]
+                child[key] = value
+        # Preserve sane risk/reward geometry.
+        if isinstance(child.get("sl_atr"), (int, float)):
+            child["sl_atr"] = max(0.3, min(float(child["sl_atr"]), 5.0))
+        if isinstance(child.get("tp_atr"), (int, float)):
+            child["tp_atr"] = max(0.4, min(float(child["tp_atr"]), 10.0))
         return child
 
-    # ── strategy loading ───────────────────────────────────────────────────────
+    @staticmethod
+    def _crossover_params(a: dict, b: dict) -> dict:
+        child = {}
+        for key in set(a) | set(b):
+            if key in a and key in b:
+                child[key] = random.choice((a[key], b[key]))
+            elif key in a:
+                child[key] = a[key]
+            else:
+                child[key] = b[key]
+        return child
 
-    def _load_strategy_config(self, strategy_id: str) -> Optional[dict]:
-        """Load PARAMS dict from a strategy's best_config or its source file."""
-        row = self.db.fetchone(
-            "SELECT best_config, file_path FROM strategies WHERE id = ?", (strategy_id,)
-        )
-        if row is None:
-            return None
+    @staticmethod
+    def _best_same_family_pair(top: List[dict]):
+        for i, a in enumerate(top):
+            for b in top[i + 1:]:
+                if a.get("family") == b.get("family"):
+                    return a, b
+        return None
 
-        # Try best_config from DB first
-        if row["best_config"]:
-            try:
-                config = json.loads(row["best_config"]) if isinstance(row["best_config"], str) else row["best_config"]
-                if isinstance(config, dict) and config:
-                    return config
-            except (json.JSONDecodeError, TypeError):
-                pass
+    def _create_evolved_strategy(self, evo_id, parent_id, parent_generation, params, family, description) -> bool:
+        row = self.db.fetchone("SELECT file_path FROM strategies WHERE id=?", (parent_id,))
+        if not row:
+            return False
+        parent_path = self._resolve_path(row["file_path"], parent_id)
+        if parent_path is None:
+            return False
 
-        # Fall back to loading PARAMS from the strategy file
-        file_path = Path(row["file_path"])
-        if not file_path.exists():
-            return None
-        try:
-            spec = importlib.util.spec_from_file_location(f"strat_{strategy_id}", str(file_path))
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return dict(getattr(module, "PARAMS", {}))
-        except Exception:
-            return None
-
-    # ── evolved strategy creation ──────────────────────────────────────────────
-
-    def _create_evolved_strategy(
-        self,
-        evo_id: str,
-        parent_id: str,
-        parent_generation: int,
-        params: dict,
-        family: str,
-        description: str,
-    ):
-        """
-        Create an evolved strategy: write a wrapper .py file that imports
-        the parent's generate_signals but overrides PARAMS, then register
-        and queue for backtest.
-        """
-        # Load parent file path
-        parent_row = self.db.fetchone("SELECT file_path FROM strategies WHERE id = ?", (parent_id,))
-        if parent_row is None:
-            self.logger.warning(f"Parent strategy {parent_id} not found")
-            return
-
-        parent_path = Path(parent_row["file_path"])
-        if not parent_path.exists():
-            self.logger.warning(f"Parent file {parent_path} does not exist")
-            return
-
-        # Read parent source and replace PARAMS line
         parent_code = parent_path.read_text(encoding="utf-8")
-
-        # Build new PARAMS dict string
-        params_str = "PARAMS = " + json.dumps(params, indent=4)
-
-        # Replace the PARAMS definition in the parent code
-        import re
-        # Match PARAMS = { ... } (potentially multi-line)
+        params_str = "PARAMS = " + repr(params)
         pattern = r"PARAMS\s*=\s*\{[^}]*\}"
-        if re.search(pattern, parent_code, re.DOTALL):
-            new_code = re.sub(pattern, params_str, parent_code, count=1, flags=re.DOTALL)
-        else:
-            # If no match, prepend PARAMS override
-            new_code = params_str + "\n\n" + parent_code
+        if not re.search(pattern, parent_code, re.DOTALL):
+            self.logger.warning(f"No replaceable PARAMS dict in {parent_id}; child skipped")
+            return False
+        new_code = re.sub(pattern, params_str, parent_code, count=1, flags=re.DOTALL)
+        try:
+            compile(new_code, f"<evolved:{evo_id}>", "exec")
+        except SyntaxError as exc:
+            self.logger.warning(f"Evolved child {evo_id} invalid: {exc}")
+            return False
 
         file_name = f"strategy_{evo_id.lower()}.py"
         file_path = STRATEGIES_DIR / file_name
         file_path.write_text(new_code, encoding="utf-8")
-
-        new_gen = parent_generation + 1
         self.db.execute(
             "INSERT OR IGNORE INTO strategies "
-            "(id, file_path, family, description, generation, parent_strategy, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (evo_id, str(file_path), family, description, new_gen, parent_id, self.agent_id, "candidate"),
+            "(id,file_path,family,description,generation,parent_strategy,created_by,status) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (evo_id, str(file_path), family, description, parent_generation + 1,
+             parent_id, self.agent_id, "candidate"),
         )
-
         self.post_task(
-            target_agent="backtest_runner",
-            task_type="backtest",
-            payload={"strategy_id": evo_id, "file_path": str(file_path)},
-            priority=5,
+            target_agent="backtest_runner", task_type="backtest",
+            payload={"strategy_id": evo_id, "file_path": str(file_path)}, priority=4,
         )
-        self.logger.info(f"Created evolved strategy {evo_id} (gen {new_gen}) from {parent_id}")
-
-    # ── retirement ─────────────────────────────────────────────────────────────
-
-    def _retire_poor_strategies(self, min_runs: int = 3, max_score: float = 0.3) -> list:
-        """
-        Retire strategies that have at least `min_runs` backtest results and
-        whose best composite score is below `max_score`.
-
-        Returns list of retired strategy IDs.
-        """
-        rows = self.db.fetchall(
-            "SELECT s.id, s.best_win_rate, s.best_profit_factor, s.best_max_drawdown, "
-            "s.best_x10_count, COUNT(b.id) as run_count "
-            "FROM strategies s "
-            "JOIN backtest_results b ON s.id = b.strategy_id "
-            "WHERE s.status NOT IN ('retired', 'deleted', 'hall_of_fame') "
-            "GROUP BY s.id "
-            "HAVING run_count >= ?",
-            (min_runs,),
-        )
-
-        retired = []
-        for r in rows:
-            metrics = {
-                "win_rate": r["best_win_rate"] or 0.0,
-                "profit_factor": r["best_profit_factor"] or 0.0,
-                "max_drawdown": r["best_max_drawdown"] or 1.0,
-                "x10_count": r["best_x10_count"] or 0,
-                "total_trades": 1,
-            }
-            score = composite_score(metrics)
-            if score < max_score:
-                self.db.execute(
-                    "UPDATE strategies SET status = 'retired' WHERE id = ?", (r["id"],)
-                )
-                retired.append(r["id"])
-                self.logger.info(f"Retired strategy {r['id']} (score={score:.3f})")
-
-        return retired
-
-    # ── ID generation ──────────────────────────────────────────────────────────
+        self.logger.info(f"Created {evo_id} from {parent_id}")
+        return True
 
     def _next_evolution_id(self) -> str:
-        """Generate the next sequential evolved-strategy ID (E0001, E0002, …)."""
-        row = self.db.fetchone(
-            "SELECT id FROM strategies WHERE id LIKE 'E%' AND id NOT LIKE 'ENS%' ORDER BY id DESC LIMIT 1"
-        )
-        if row:
-            last_num = int(row["id"][1:])
-            return f"E{last_num + 1:04d}"
-        return "E0001"
+        rows = self.db.fetchall("SELECT id FROM strategies WHERE id LIKE 'E%' AND id NOT LIKE 'ENS%'")
+        nums = []
+        for row in rows:
+            try:
+                nums.append(int(row["id"][1:]))
+            except (ValueError, TypeError):
+                continue
+        return f"E{max(nums, default=0) + 1:04d}"

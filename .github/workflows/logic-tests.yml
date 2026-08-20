@@ -30,6 +30,7 @@ jobs:
       - name: Compile critical modules
         run: |
           python -m py_compile \
+            start.py \
             run_system.py \
             engine/backtest.py \
             agents/backtest_runner.py \

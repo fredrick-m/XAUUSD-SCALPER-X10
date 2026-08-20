@@ -71,23 +71,16 @@ class SignalGatekeeper(BaseAgent):
                 self.emit_event(
                     "gate_blocked",
                     f"Signal blocked for {strategy_id}: {reason}",
-                    metadata={
-                        "strategy_id": strategy_id,
-                        "reason": reason,
-                        "direction": direction,
-                    },
+                    metadata={"strategy_id": strategy_id, "reason": reason, "direction": direction},
                 )
                 return False, reason
         self.logger.info(f"GATE PASS {strategy_id} {direction.upper()}")
         return True, "all_checks_passed"
 
     def _check_deployment_evidence(self, ctx: dict) -> Tuple[bool, str]:
-        """Fail closed unless Portfolio V5 and every upstream proof are current."""
         from core.config import BACKTEST_METRIC_VERSION
-
         row = self.db.fetchone(
-            "SELECT status, walk_forward_passed, best_config "
-            "FROM strategies WHERE id = ?",
+            "SELECT status, walk_forward_passed, best_config FROM strategies WHERE id = ?",
             (ctx["strategy_id"],),
         )
         if not row:
@@ -100,14 +93,9 @@ class SignalGatekeeper(BaseAgent):
         config = {}
         if row["best_config"]:
             try:
-                config = (
-                    json.loads(row["best_config"])
-                    if isinstance(row["best_config"], str)
-                    else dict(row["best_config"])
-                )
+                config = json.loads(row["best_config"]) if isinstance(row["best_config"], str) else dict(row["best_config"])
             except (json.JSONDecodeError, TypeError, ValueError):
                 return False, "best_config_unreadable"
-
         if config.get("metric_version") != BACKTEST_METRIC_VERSION:
             return False, "stale_metric_version"
         if config.get("metric_refresh_pending", True):
@@ -144,16 +132,13 @@ class SignalGatekeeper(BaseAgent):
         statistical = config.get("statistical_evidence")
         if not isinstance(statistical, dict) or not statistical.get("passed", False):
             return False, "statistical_evidence_missing_or_failed"
-
         stability = config.get("chronological_stability")
         if not isinstance(stability, dict) or not stability.get("passed", False):
             return False, "chronological_stability_missing_or_failed"
         if not stability.get("locked_holdout_excluded", False):
             return False, "stability_reused_locked_holdout"
-
         if config.get("portfolio_selected") is not True:
             return False, "portfolio_not_selected"
-
         return True, "ok"
 
     def _check_risk_readiness(self, ctx: dict) -> Tuple[bool, str]:
@@ -169,9 +154,7 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_circuit_breaker(self, ctx: dict) -> Tuple[bool, str]:
-        row = self.db.fetchone(
-            "SELECT config FROM agent_registry WHERE id = ?", ("risk_manager",)
-        )
+        row = self.db.fetchone("SELECT config FROM agent_registry WHERE id = ?", ("risk_manager",))
         if not row or not row["config"]:
             return False, "risk_state_missing"
         try:
@@ -187,15 +170,17 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_news_blackout(self, ctx: dict) -> Tuple[bool, str]:
-        row = self.db.fetchone(
-            "SELECT config FROM agent_registry WHERE id = ?", ("news_calendar",)
-        )
+        row = self.db.fetchone("SELECT config FROM agent_registry WHERE id = ?", ("news_calendar",))
         if not row or not row["config"]:
             return False, "news_calendar_unavailable"
         try:
             config = json.loads(row["config"]) if isinstance(row["config"], str) else row["config"]
         except (json.JSONDecodeError, TypeError):
             return False, "news_calendar_unreadable"
+
+        if config.get("calendar_verified") is not True:
+            source = config.get("calendar_source") or "unknown"
+            return False, f"news_calendar_unverified ({source})"
 
         last_fetch = config.get("last_fetch")
         if not last_fetch:
@@ -221,9 +206,7 @@ class SignalGatekeeper(BaseAgent):
     def _check_max_open_trades(self, ctx: dict) -> Tuple[bool, str]:
         from agents.risk_manager import get_max_open_trades
         max_trades = get_max_open_trades(self.db)
-        row = self.db.fetchone(
-            "SELECT COUNT(*) as cnt FROM live_trades WHERE status = 'open'"
-        )
+        row = self.db.fetchone("SELECT COUNT(*) as cnt FROM live_trades WHERE status = 'open'")
         open_count = (row["cnt"] or 0) if row else 0
         if open_count >= max_trades:
             return False, f"max_open_trades ({open_count}/{max_trades})"
@@ -241,17 +224,13 @@ class SignalGatekeeper(BaseAgent):
 
     def _check_family_exposure(self, ctx: dict) -> Tuple[bool, str]:
         from core.config import FAMILY_MAX_OPEN
-        row = self.db.fetchone(
-            "SELECT family FROM strategies WHERE id = ?", (ctx["strategy_id"],)
-        )
+        row = self.db.fetchone("SELECT family FROM strategies WHERE id = ?", (ctx["strategy_id"],))
         family = row["family"] if row else None
         if not family:
             return True, "ok"
         cnt = self.db.fetchone(
-            "SELECT COUNT(*) AS cnt FROM live_trades lt "
-            "JOIN strategies s ON s.id = lt.strategy_id "
-            "WHERE lt.status = 'open' AND s.family = ?",
-            (family,),
+            "SELECT COUNT(*) AS cnt FROM live_trades lt JOIN strategies s ON s.id = lt.strategy_id "
+            "WHERE lt.status = 'open' AND s.family = ?", (family,),
         )
         open_count = (cnt["cnt"] or 0) if cnt else 0
         max_open = self.get_config("family_max_open", FAMILY_MAX_OPEN)
@@ -262,10 +241,7 @@ class SignalGatekeeper(BaseAgent):
     def _check_portfolio_heat(self, ctx: dict) -> Tuple[bool, str]:
         from core.config import PIP_VALUE
         from agents.risk_manager import get_max_portfolio_heat
-
-        rows = self.db.fetchall(
-            "SELECT lot, sl, entry_price FROM live_trades WHERE status = 'open'"
-        )
+        rows = self.db.fetchall("SELECT lot, sl, entry_price FROM live_trades WHERE status = 'open'")
         total_risk = 0.0
         for r in rows:
             lot = float(r["lot"] or 0.0)
@@ -276,17 +252,14 @@ class SignalGatekeeper(BaseAgent):
             if sl <= 0:
                 return False, "open_trade_without_stop"
             total_risk += lot * abs(entry - sl) * PIP_VALUE
-
         candidate_lot = float(ctx.get("lot") or 0.0)
         candidate_sl_distance = float(ctx.get("sl_distance") or 0.0)
         if candidate_lot <= 0 or candidate_sl_distance <= 0:
             return False, "invalid_candidate_risk"
         total_risk += candidate_lot * candidate_sl_distance * PIP_VALUE
-
         equity = float(ctx.get("equity") or 0.0)
         if equity <= 0:
             return False, "zero_equity"
-
         heat = total_risk / equity
         max_heat = get_max_portfolio_heat(self.db)
         if heat > max_heat:
@@ -295,25 +268,18 @@ class SignalGatekeeper(BaseAgent):
 
     def _check_entry_burst(self, ctx: dict) -> Tuple[bool, str]:
         from datetime import timedelta
-        window_start = (
-            datetime.now(timezone.utc) - timedelta(minutes=ENTRY_WINDOW_MINUTES)
-        ).isoformat()
+        window_start = (datetime.now(timezone.utc) - timedelta(minutes=ENTRY_WINDOW_MINUTES)).isoformat()
         row = self.db.fetchone(
             "SELECT COUNT(*) AS cnt FROM live_trades WHERE direction = ? AND opened_at >= ?",
             (ctx["direction"], window_start),
         )
         recent = (row["cnt"] or 0) if row else 0
         if recent >= MAX_ENTRIES_PER_WINDOW:
-            return False, (
-                f"entry_burst ({recent} {ctx['direction']} entries "
-                f"in last {ENTRY_WINDOW_MINUTES}min)"
-            )
+            return False, f"entry_burst ({recent} {ctx['direction']} entries in last {ENTRY_WINDOW_MINUTES}min)"
         return True, "ok"
 
     def _check_directional_bias(self, ctx: dict) -> Tuple[bool, str]:
-        rows = self.db.fetchall(
-            "SELECT direction FROM live_trades WHERE status = 'open'"
-        )
+        rows = self.db.fetchall("SELECT direction FROM live_trades WHERE status = 'open'")
         if not rows:
             return True, "ok"
         total = len(rows) + 1
@@ -325,8 +291,7 @@ class SignalGatekeeper(BaseAgent):
 
     def _check_confidence_score(self, ctx: dict) -> Tuple[bool, str]:
         row = self.db.fetchone(
-            "SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?",
-            (ctx["strategy_id"],),
+            "SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],),
         )
         if not row:
             return True, "ok"
@@ -338,8 +303,7 @@ class SignalGatekeeper(BaseAgent):
 
     def _check_live_win_rate(self, ctx: dict) -> Tuple[bool, str]:
         row = self.db.fetchone(
-            "SELECT total_trades, live_win_rate FROM strategy_live_stats WHERE strategy_id = ?",
-            (ctx["strategy_id"],),
+            "SELECT total_trades, live_win_rate FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],),
         )
         if not row:
             return True, "ok"
@@ -363,9 +327,9 @@ class SignalGatekeeper(BaseAgent):
 
     def _update_confidence_scores(self):
         rows = self.db.fetchall(
-            "SELECT s.id, s.best_profit_factor, s.best_win_rate, "
-            "s.best_max_drawdown, s.walk_forward_passed, s.regimes_passed, s.best_config "
-            "FROM strategies s WHERE s.status = 'validated' AND s.walk_forward_passed = 1"
+            "SELECT s.id, s.best_profit_factor, s.best_win_rate, s.best_max_drawdown, "
+            "s.walk_forward_passed, s.regimes_passed, s.best_config FROM strategies s "
+            "WHERE s.status = 'validated' AND s.walk_forward_passed = 1"
         )
         for r in rows:
             score = 0.0
@@ -374,15 +338,10 @@ class SignalGatekeeper(BaseAgent):
                 score += min(20, (pf - 1.0) * 20)
             if r["walk_forward_passed"]:
                 score += 25
-
             config = {}
             if r["best_config"]:
                 try:
-                    config = (
-                        json.loads(r["best_config"])
-                        if isinstance(r["best_config"], str)
-                        else r["best_config"]
-                    )
+                    config = json.loads(r["best_config"]) if isinstance(r["best_config"], str) else r["best_config"]
                 except (json.JSONDecodeError, TypeError):
                     pass
             mc = config.get("monte_carlo", {})
@@ -393,17 +352,13 @@ class SignalGatekeeper(BaseAgent):
                 score += 15
             elif p_ruin < 0.20:
                 score += 10
-
             sensitivity = config.get("sensitivity", {})
             if not sensitivity.get("is_fragile", True):
                 score += 15
-
             regimes = r["regimes_passed"] or 0
             score += min(10, regimes * 5)
-
             live = self.db.fetchone(
-                "SELECT total_trades, live_win_rate, live_profit_factor "
-                "FROM strategy_live_stats WHERE strategy_id = ?",
+                "SELECT total_trades, live_win_rate, live_profit_factor FROM strategy_live_stats WHERE strategy_id = ?",
                 (r["id"],),
             )
             live_trades = (live["total_trades"] or 0) if live else 0
@@ -413,20 +368,16 @@ class SignalGatekeeper(BaseAgent):
                     score += 10
                 elif live_wr > 0.40:
                     score += 5
-
             if config.get("probation"):
                 graduated = live_trades >= 50 and live_wr > 0.50
                 if not graduated:
                     score = min(score, 45.0)
-
             plateau = self.db.fetchone(
                 "SELECT COUNT(*) AS n_tested, "
                 "SUM(CASE WHEN v.pf >= 1.3 AND v.dd <= 0.25 AND v.trades >= 30 THEN 1 ELSE 0 END) AS n_good "
-                "FROM (SELECT strategy_id, MAX(profit_factor) AS pf, "
-                "             MAX(total_trades) AS trades, MIN(max_drawdown) AS dd "
-                "      FROM backtest_results GROUP BY strategy_id) v "
-                "JOIN strategies c ON c.id = v.strategy_id WHERE c.parent_strategy = ?",
-                (r["id"],),
+                "FROM (SELECT strategy_id, MAX(profit_factor) AS pf, MAX(total_trades) AS trades, "
+                "MIN(max_drawdown) AS dd FROM backtest_results GROUP BY strategy_id) v "
+                "JOIN strategies c ON c.id = v.strategy_id WHERE c.parent_strategy = ?", (r["id"],),
             )
             n_tested = (plateau["n_tested"] or 0) if plateau else 0
             n_good = (plateau["n_good"] or 0) if plateau else 0
@@ -439,27 +390,19 @@ class SignalGatekeeper(BaseAgent):
                 elif ratio < 0.15:
                     score = min(score, 35.0)
                 if n_tested >= 15 and n_good == 0:
-                    self.db.execute(
-                        "UPDATE strategies SET walk_forward_passed = 0 WHERE id = ?",
-                        (r["id"],),
-                    )
+                    self.db.execute("UPDATE strategies SET walk_forward_passed = 0 WHERE id = ?", (r["id"],))
                     self.emit_event(
                         "warning",
                         f"Strategy {r['id']} UNDEPLOYED: isolated peak (0/{n_tested} burst neighbors validated)",
                         metadata={"strategy_id": r["id"], "n_tested": n_tested},
                     )
-
             self.db.execute(
                 "INSERT INTO strategy_live_stats (strategy_id, confidence_score) VALUES (?, ?) "
-                "ON CONFLICT(strategy_id) DO UPDATE SET confidence_score = ?",
-                (r["id"], score, score),
+                "ON CONFLICT(strategy_id) DO UPDATE SET confidence_score = ?", (r["id"], score, score),
             )
 
     def get_lot_scaling(self, strategy_id: str) -> float:
-        row = self.db.fetchone(
-            "SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?",
-            (strategy_id,),
-        )
+        row = self.db.fetchone("SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (strategy_id,))
         if not row:
             return 0.5
         score = row["confidence_score"] or 50.0
@@ -470,26 +413,17 @@ class SignalGatekeeper(BaseAgent):
         return 0.25
 
 
-def gate_check(db, strategy_id: str, direction: str,
-               lot: float, sl_distance: float,
-               account_balance: float, account_equity: float,
-               free_margin: float) -> Tuple[bool, str]:
-    """Lightweight gate entry point used by paper_trade."""
+def gate_check(db, strategy_id: str, direction: str, lot: float, sl_distance: float,
+               account_balance: float, account_equity: float, free_margin: float) -> Tuple[bool, str]:
     gk = SignalGatekeeper.__new__(SignalGatekeeper)
     gk.db = db
     gk.agent_id = "signal_gatekeeper"
     gk.logger = __import__("logging").getLogger("agent.signal_gatekeeper")
-    return gk.check_signal(
-        strategy_id, direction, lot, sl_distance,
-        account_balance, account_equity, free_margin,
-    )
+    return gk.check_signal(strategy_id, direction, lot, sl_distance, account_balance, account_equity, free_margin)
 
 
 def get_confidence_scaling(db, strategy_id: str) -> float:
-    row = db.fetchone(
-        "SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?",
-        (strategy_id,),
-    )
+    row = db.fetchone("SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (strategy_id,))
     if not row:
         return 0.5
     score = row["confidence_score"] or 50.0

@@ -1,6 +1,5 @@
 """Signal Gatekeeper: strict pre-trade filter for portfolio-level risk control."""
 import json
-from datetime import datetime, timezone
 from typing import Tuple
 
 from agents.base_agent import BaseAgent
@@ -27,7 +26,7 @@ class SignalGatekeeper(BaseAgent):
         super().__init__(agent_id="signal_gatekeeper", db=db)
 
     def setup(self):
-        self.logger.info("Signal Gatekeeper ready — Risk Engine V2 limits active")
+        self.logger.info("Signal Gatekeeper ready — Portfolio V5 + Risk Engine V2 locks active")
 
     def tick(self):
         self._update_confidence_scores()
@@ -40,6 +39,7 @@ class SignalGatekeeper(BaseAgent):
                      account_balance: float, account_equity: float,
                      free_margin: float) -> Tuple[bool, str]:
         checks = [
+            self._check_deployment_evidence,
             self._check_circuit_breaker,
             self._check_news_blackout,
             self._check_max_open_trades,
@@ -68,12 +68,90 @@ class SignalGatekeeper(BaseAgent):
                 self.emit_event(
                     "gate_blocked",
                     f"Signal blocked for {strategy_id}: {reason}",
-                    metadata={"strategy_id": strategy_id, "reason": reason,
-                              "direction": direction},
+                    metadata={
+                        "strategy_id": strategy_id,
+                        "reason": reason,
+                        "direction": direction,
+                    },
                 )
                 return False, reason
         self.logger.info(f"GATE PASS {strategy_id} {direction.upper()}")
         return True, "all_checks_passed"
+
+    def _check_deployment_evidence(self, ctx: dict) -> Tuple[bool, str]:
+        """Fail closed unless Portfolio V5 and every upstream proof are current."""
+        from core.config import BACKTEST_METRIC_VERSION
+
+        row = self.db.fetchone(
+            "SELECT status, walk_forward_passed, best_config "
+            "FROM strategies WHERE id = ?",
+            (ctx["strategy_id"],),
+        )
+        if not row:
+            return False, "strategy_not_registered"
+        if row["status"] != "validated":
+            return False, f"strategy_not_portfolio_validated ({row['status']})"
+        if not row["walk_forward_passed"]:
+            return False, "walk_forward_not_passed"
+
+        config = {}
+        if row["best_config"]:
+            try:
+                config = (
+                    json.loads(row["best_config"])
+                    if isinstance(row["best_config"], str)
+                    else dict(row["best_config"])
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return False, "best_config_unreadable"
+
+        if config.get("metric_version") != BACKTEST_METRIC_VERSION:
+            return False, "stale_metric_version"
+        if config.get("metric_refresh_pending", True):
+            return False, "metric_refresh_pending"
+
+        validation = config.get("validation_v2")
+        if not isinstance(validation, dict) or not validation.get("passed", False):
+            return False, "validation_v2_missing_or_failed"
+        if not validation.get("walk_forward", {}).get("passed", False):
+            return False, "walk_forward_v2_failed"
+        if not validation.get("holdout_available", False):
+            return False, "locked_holdout_unavailable"
+        if not validation.get("holdout", {}).get("passed", False):
+            return False, "locked_holdout_failed"
+
+        mc = config.get("monte_carlo")
+        if not isinstance(mc, dict) or mc.get("model") != "fixed_fraction_edge_model_v2":
+            return False, "monte_carlo_v2_missing"
+        ruin = mc.get("p_ruin_10d", mc.get("p_ruin"))
+        if ruin is None:
+            return False, "monte_carlo_ruin_missing"
+        try:
+            if float(ruin) > 0.10:
+                return False, "monte_carlo_ruin_too_high"
+        except (TypeError, ValueError):
+            return False, "monte_carlo_ruin_invalid"
+
+        sensitivity = config.get("sensitivity")
+        if not config.get("sensitivity_tested", False) or not isinstance(sensitivity, dict):
+            return False, "sensitivity_missing"
+        if sensitivity.get("is_fragile", False):
+            return False, "sensitivity_fragile"
+
+        statistical = config.get("statistical_evidence")
+        if not isinstance(statistical, dict) or not statistical.get("passed", False):
+            return False, "statistical_evidence_missing_or_failed"
+
+        stability = config.get("chronological_stability")
+        if not isinstance(stability, dict) or not stability.get("passed", False):
+            return False, "chronological_stability_missing_or_failed"
+        if not stability.get("locked_holdout_excluded", False):
+            return False, "stability_reused_locked_holdout"
+
+        if config.get("portfolio_selected") is not True:
+            return False, "portfolio_not_selected"
+
+        return True, "ok"
 
     def _check_circuit_breaker(self, ctx: dict) -> Tuple[bool, str]:
         row = self.db.fetchone(
@@ -136,7 +214,7 @@ class SignalGatekeeper(BaseAgent):
             (family,),
         )
         open_count = (cnt["cnt"] or 0) if cnt else 0
-        max_open = self.get_config("family_max_open") or FAMILY_MAX_OPEN
+        max_open = self.get_config("family_max_open", FAMILY_MAX_OPEN)
         if open_count >= max_open:
             return False, f"family_exposure ({family}: {open_count}/{max_open})"
         return True, "ok"
@@ -189,7 +267,7 @@ class SignalGatekeeper(BaseAgent):
             return True, "ok"
         total = len(rows) + 1
         same_dir = sum(1 for r in rows if r["direction"] == ctx["direction"]) + 1
-        max_bias = self.get_config("max_directional_bias") or MAX_DIRECTIONAL_BIAS
+        max_bias = self.get_config("max_directional_bias", MAX_DIRECTIONAL_BIAS)
         if total >= 3 and same_dir / total > max_bias:
             return False, f"directional_bias ({ctx['direction']}: {same_dir}/{total} = {same_dir/total:.0%})"
         return True, "ok"
@@ -202,7 +280,7 @@ class SignalGatekeeper(BaseAgent):
         if not row:
             return True, "ok"
         score = row["confidence_score"] or 50.0
-        min_score = self.get_config("min_confidence_score") or MIN_CONFIDENCE_SCORE
+        min_score = self.get_config("min_confidence_score", MIN_CONFIDENCE_SCORE)
         if score < min_score:
             return False, f"low_confidence ({score:.0f} < {min_score:.0f})"
         return True, "ok"
@@ -247,7 +325,11 @@ class SignalGatekeeper(BaseAgent):
             config = {}
             if r["best_config"]:
                 try:
-                    config = json.loads(r["best_config"]) if isinstance(r["best_config"], str) else r["best_config"]
+                    config = (
+                        json.loads(r["best_config"])
+                        if isinstance(r["best_config"], str)
+                        else r["best_config"]
+                    )
                 except (json.JSONDecodeError, TypeError):
                     pass
             mc = config.get("monte_carlo", {})
@@ -339,12 +421,16 @@ def gate_check(db, strategy_id: str, direction: str,
                lot: float, sl_distance: float,
                account_balance: float, account_equity: float,
                free_margin: float) -> Tuple[bool, str]:
+    """Lightweight gate entry point used by paper_trade.
+
+    BaseAgent.get_config() and emit_event() only require db, agent_id and logger,
+    so preserve the real inherited methods instead of replacing them with
+    lambdas. This keeps configured limits and gate-blocked audit events active.
+    """
     gk = SignalGatekeeper.__new__(SignalGatekeeper)
     gk.db = db
     gk.agent_id = "signal_gatekeeper"
     gk.logger = __import__("logging").getLogger("agent.signal_gatekeeper")
-    gk.get_config = lambda key: None
-    gk.emit_event = lambda *args, **kwargs: None
     return gk.check_signal(
         strategy_id, direction, lot, sl_distance,
         account_balance, account_equity, free_margin,

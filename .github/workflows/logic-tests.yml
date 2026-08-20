@@ -51,4 +51,5 @@ jobs:
             tests/test_validation_v2.py \
             tests/test_portfolio_v5_gates.py \
             tests/test_portfolio_v5_lifecycle.py \
-            tests/test_risk_engine_v2.py
+            tests/test_risk_engine_v2.py \
+            tests/test_demo_safety_gates.py

@@ -37,7 +37,9 @@ jobs:
             agents/risk_manager.py \
             agents/signal_gatekeeper.py \
             agents/strategy_factory.py \
-            scripts/refresh_x10_metric_version.py
+            agents/news_calendar.py \
+            scripts/refresh_x10_metric_version.py \
+            scripts/demo_preflight.py
 
       - name: Run pure logic tests
         env:

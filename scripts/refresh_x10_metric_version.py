@@ -1,16 +1,22 @@
-"""Invalidate stale pre-V2 strategy evidence without deleting history.
+"""One-time migration for a new backtest metric version.
 
-Run once after deploying a new BACKTEST_METRIC_VERSION. The script is
-idempotent: strategies already stamped with the current metric version are
-left untouched.
+The runner only processes a candidate when no active ``backtest_results`` row
+exists. Therefore a metric-semantic change cannot be handled by changing the
+strategy status alone: old rows must leave the active results table.
 
-Historical backtest_results rows remain in SQLite for audit/debugging. What is
-cleared is only the *derived deployment evidence* that must not survive a
-change in metric semantics.
+This migration preserves history by copying every active result into
+``backtest_results_archive`` before clearing the active table. It also removes
+derived deployment evidence (Monte Carlo, sensitivity, statistical/portfolio
+state) and re-queues every non-retired strategy for the current engine.
+
+The operation is idempotent per ``BACKTEST_METRIC_VERSION`` through the
+``metric_migrations`` table. Running the script twice for the same version does
+nothing the second time.
 """
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from core.config import BACKTEST_METRIC_VERSION
@@ -43,48 +49,82 @@ def _parse_config(raw: Any) -> dict:
         return {}
 
 
-def _is_current(config: dict) -> bool:
-    return config.get("metric_version") == BACKTEST_METRIC_VERSION
+def _ensure_tables(db: Database) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS metric_migrations ("
+        "metric_version TEXT PRIMARY KEY, applied_at TEXT NOT NULL, "
+        "archived_results INTEGER NOT NULL DEFAULT 0, "
+        "requeued_strategies INTEGER NOT NULL DEFAULT 0)"
+    )
+
+    # CREATE TABLE AS intentionally mirrors whatever backtest_results schema
+    # exists on this installation and adds two audit columns. Historical rows
+    # are never consumed by the live selection pipeline.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS backtest_results_archive AS "
+        "SELECT b.*, CAST(NULL AS TEXT) AS archived_metric_version, "
+        "CAST(NULL AS TEXT) AS archived_at "
+        "FROM backtest_results b WHERE 0"
+    )
 
 
 def refresh(db: Database) -> dict:
-    """Invalidate stale metrics and queue strategies for V2 revalidation.
+    """Archive stale active results and re-queue strategies for this version."""
+    _ensure_tables(db)
 
-    Rules:
-    - candidate strategies with no derived evidence stay candidates;
-    - validated / portfolio_reserve strategies become candidates;
-    - rejected/retired strategies remain rejected/retired unless their stored
-      best metrics were derived from an older engine and therefore need a new
-      fair evaluation; rejected strategies are re-queued, retired are not;
-    - live deployment is disabled immediately by walk_forward_passed=0;
-    - old backtest rows are retained untouched.
-    """
+    existing = db.fetchone(
+        "SELECT metric_version, applied_at, archived_results, requeued_strategies "
+        "FROM metric_migrations WHERE metric_version=?",
+        (BACKTEST_METRIC_VERSION,),
+    )
+    if existing:
+        return {
+            "metric_version": BACKTEST_METRIC_VERSION,
+            "already_applied": True,
+            "applied_at": existing["applied_at"],
+            "archived_results": existing["archived_results"],
+            "requeued": existing["requeued_strategies"],
+        }
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    count_row = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results")
+    archived_count = int(count_row["n"] or 0) if count_row else 0
+
+    if archived_count:
+        # backtest_results_archive was created as: all source columns + 2 audit
+        # columns, so SELECT b.*, ?, ? remains valid even if the source schema
+        # gains ordinary columns before this migration is run.
+        db.execute(
+            "INSERT INTO backtest_results_archive "
+            "SELECT b.*, ?, ? FROM backtest_results b",
+            (BACKTEST_METRIC_VERSION, now),
+        )
+        db.execute("DELETE FROM backtest_results")
+
     rows = db.fetchall(
         "SELECT id, status, best_config FROM strategies "
         "WHERE status IN ('candidate','validated','portfolio_reserve','rejected','retired')"
     )
 
-    changed = 0
-    skipped = 0
+    requeued = 0
     retired = 0
-
     for row in rows:
-        config = _parse_config(row["best_config"])
-        if _is_current(config):
-            skipped += 1
-            continue
-
         if row["status"] == "retired":
             retired += 1
             continue
 
+        config = _parse_config(row["best_config"])
         for key in DERIVED_KEYS:
             config.pop(key, None)
+
+        # This marker means "queued for this engine version", not "passed".
+        # A future runner enhancement may stamp per-result evidence separately;
+        # until then, the active backtest_results table itself contains only
+        # results produced after this migration.
         config["metric_version"] = BACKTEST_METRIC_VERSION
         config["metric_refresh_pending"] = True
 
-        # Reset aggregate best_* values. They are not comparable across the
-        # old and new x10_count semantics and must be repopulated by V2.
         db.execute(
             "UPDATE strategies SET "
             "status='candidate', walk_forward_passed=0, "
@@ -94,12 +134,21 @@ def refresh(db: Database) -> dict:
             "WHERE id=?",
             (json.dumps(config), row["id"]),
         )
-        changed += 1
+        requeued += 1
+
+    db.execute(
+        "INSERT INTO metric_migrations "
+        "(metric_version, applied_at, archived_results, requeued_strategies) "
+        "VALUES (?, ?, ?, ?)",
+        (BACKTEST_METRIC_VERSION, now, archived_count, requeued),
+    )
 
     return {
         "metric_version": BACKTEST_METRIC_VERSION,
-        "requeued": changed,
-        "already_current": skipped,
+        "already_applied": False,
+        "applied_at": now,
+        "archived_results": archived_count,
+        "requeued": requeued,
         "retired_untouched": retired,
     }
 

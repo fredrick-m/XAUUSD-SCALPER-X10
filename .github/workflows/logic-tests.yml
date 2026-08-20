@@ -51,6 +51,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_x10_window_metrics.py \
+            tests/test_execution_ordering.py \
             tests/test_metric_version_refresh.py \
             tests/test_validation_v2.py \
             tests/test_portfolio_v5_gates.py \

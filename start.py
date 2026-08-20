@@ -1,8 +1,9 @@
 """XAUUSD-SCALPER-X10 autonomous multi-agent system entry point.
 
-Every process start forces NEW MT5 demo entries OFF. Research agents may run,
-but execution requires a fresh successful ``scripts/demo_switch.py enable``
-with an explicitly named risk profile.
+Every process start forces NEW MT5 demo entries OFF. The current metric
+migration is applied idempotently before agents start, so stale evidence cannot
+silently survive a deployment. Demo execution still requires a fresh preflight
+and an explicitly named risk profile.
 """
 import json
 import signal
@@ -10,6 +11,7 @@ import signal
 from core.config import DB_PATH
 from core.db import Database
 from agents.orchestrator import Orchestrator
+from scripts.refresh_x10_metric_version import refresh as refresh_metric_version
 
 
 def _read_agent_config(db: Database, agent_id: str) -> dict:
@@ -76,17 +78,28 @@ def main():
     print("=" * 60)
     print()
 
-    print("[1/4] Initializing database...")
+    print("[1/5] Initializing database...")
     db = Database(DB_PATH)
     db.init_schema()
     print(f"  DB: {DB_PATH}")
 
-    print("[2/4] Registering and tuning core agents...")
+    print("[2/5] Applying current metric migration...")
+    migration = refresh_metric_version(db)
+    if migration.get("already_applied"):
+        print(f"  Metric version already current: {migration['metric_version']}")
+    else:
+        print(
+            f"  Migrated to {migration['metric_version']}: "
+            f"archived={migration.get('archived_results', 0)} "
+            f"requeued={migration.get('requeued', 0)}"
+        )
+
+    print("[3/5] Registering and tuning core agents...")
     orch = Orchestrator(db)
     orch.register_core_agents()
     configure_research_pipeline(db)
 
-    print("[3/4] Applying startup execution lock...")
+    print("[4/5] Applying startup execution lock...")
     force_demo_off(db, "process startup")
     print("  DEMO EXECUTION: OFF")
     print("  Preflight: python scripts/demo_preflight.py")
@@ -103,7 +116,7 @@ def main():
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handle_shutdown)
 
-    print("[4/4] Starting orchestrator...")
+    print("[5/5] Starting orchestrator...")
     print()
     try:
         orch.run()

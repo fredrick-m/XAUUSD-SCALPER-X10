@@ -14,6 +14,11 @@ import numpy as np
 import pandas as pd
 
 from agents.base_agent import BaseAgent
+from agents.validation_v2 import (
+    build_anchored_walk_forward_ranges,
+    assess_walk_forward,
+    assess_holdout,
+)
 from core.config import (
     DATA_DIR, STRATEGIES_DIR, DEFAULT_RISK_PCT,
     HOLDOUT_MONTHS, HOLDOUT_MIN_PF, HOLDOUT_MIN_TRADES,
@@ -44,6 +49,10 @@ def _probation_ok(metrics: dict) -> bool:
     return wr_lb >= PROBATION_MIN_WR_LB
 
 
+def _strip_equity(metrics: dict) -> dict:
+    return {k: v for k, v in metrics.items() if k != "equity_curve"}
+
+
 # ══════════════════════════════════════════════
 # Standalone worker function (runs in subprocess)
 # ══════════════════════════════════════════════
@@ -57,7 +66,6 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     import pickle
     df = pickle.loads(df_m5_bytes)
 
-    # Load strategy module
     p = Path(file_path)
     if not p.exists():
         return {"strategy_id": strategy_id, "status": "rejected", "reason": "file_missing"}
@@ -69,7 +77,6 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     except Exception as exc:
         return {"strategy_id": strategy_id, "status": "rejected", "reason": f"load_failed: {exc}"}
 
-    # Generate signals
     params = getattr(module, "PARAMS", {})
     sl_atr = params.get("sl_atr", 1.5)
     tp_atr_val = params.get("tp_atr", 2.5)
@@ -99,8 +106,6 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     directions[long_mask] = 1
     directions[short_mask] = -1
 
-    # Trailing stop: per-strategy gene ('trailing' param), with the proven
-    # hard rule on top — wide-TP strategies (tp_atr >= 3.0) never trail.
     try:
         use_trailing = bool(params.get("trailing", 1))
         if params.get("tp_atr", 2.0) >= 3.0:
@@ -108,17 +113,12 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     except Exception:
         use_trailing = False
 
-    # Per-strategy trading session (new search dimension; defaults keep old
-    # behaviour for strategies generated before sessions were parameterized)
     sess_start = int(params.get("session_start", 7))
     sess_end = int(params.get("session_end", 21))
     if not (0 <= sess_start < sess_end <= 24):
         sess_start, sess_end = 7, 21
 
     def _sim(a: int, b: int) -> dict:
-        """Run the simulator on bar range [a:b). Indicators/signals were
-        computed once on the full series (they are causal), so slices keep
-        their warm-up — no per-segment regeneration needed."""
         return run_simulation(
             df.iloc[a:b], signals.iloc[a:b], sl_prices.iloc[a:b],
             tp_prices.iloc[a:b], directions.iloc[a:b],
@@ -128,35 +128,29 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
             slippage_override=slippage_override,
         )
 
-    # ── Final holdout split: the last HOLDOUT_MONTHS are NEVER used for
-    # selection. Validation + walk-forward run on the selection window only;
-    # the holdout is evaluated once, at the very end, as a deploy gate. ──
+    # ── Final locked holdout ───────────────────────────
     times = pd.to_datetime(df["time"])
     holdout_start = times.iloc[-1] - pd.DateOffset(months=HOLDOUT_MONTHS)
     h_idx = int((times < holdout_start).sum())
-    if h_idx < 5000 or (len(df) - h_idx) < 1000:
-        h_idx = len(df)  # dataset too small to split — no holdout gate
+    holdout_available = h_idx >= 5000 and (len(df) - h_idx) >= 1000
+    if not holdout_available:
+        h_idx = len(df)
 
-    # Quick reject: signal count (on the selection window).
-    # < 30 signals can NEVER produce the 30 trades even probation requires —
-    # rejecting here skips 4 full simulations per hopeless strategy, which is
-    # where most of the compute budget was being burned.
     signal_count = int((signals.iloc[:h_idx] != 0).sum())
     if signal_count < 30:
         return {"strategy_id": strategy_id, "status": "rejected",
                 "reason": f"too_few_signals ({signal_count} < 30)",
                 "signal_count": signal_count}
     if signal_count > 500:
-        return {"strategy_id": strategy_id, "status": "rejected", "reason": "too_many_signals",
-                "signal_count": signal_count}
+        return {"strategy_id": strategy_id, "status": "rejected",
+                "reason": "too_many_signals", "signal_count": signal_count}
 
-    # Run simulation on the selection window
     try:
         metrics = _sim(0, h_idx)
     except Exception as exc:
-        return {"strategy_id": strategy_id, "status": "error", "reason": f"simulation_failed: {exc}"}
+        return {"strategy_id": strategy_id, "status": "error",
+                "reason": f"simulation_failed: {exc}"}
 
-    # Regime count (selection window)
     regimes_tested = 1
     try:
         df_regime = add_regime_indicators(df.iloc[:h_idx])
@@ -165,9 +159,6 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     except Exception:
         pass
 
-    # Validate — with a probation path: if the ONLY failing criterion is the
-    # trade count and the strategy shows exceptional quality (stricter PF/DD/
-    # WR-lower-bound), it continues to WF + holdout and deploys at reduced size.
     probation = False
     passed, fails = validate(metrics, regimes_tested=regimes_tested, timeframe="M5")
     if not passed:
@@ -178,48 +169,77 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
             return {"strategy_id": strategy_id, "status": "failed_validation",
                     "metrics": metrics, "fails": fails, "data_hash": data_hash}
 
-    # Walk-forward validation (70/30 split inside the selection window)
-    split_idx = int(h_idx * 0.7)
-    wf_passed = True
-    if split_idx >= 1000 and (h_idx - split_idx) >= 500:
+    # ── Anchored Walk-Forward V2 ──────────────────────
+    wf_fold_payload = []
+    wf_ranges = build_anchored_walk_forward_ranges(h_idx)
+    wf_error = None
+    if wf_ranges:
         try:
-            metrics_in = _sim(0, split_idx)
-            metrics_out = _sim(split_idx, h_idx)
+            for train_start, train_end, test_start, test_end in wf_ranges:
+                train_metrics = _sim(train_start, train_end)
+                test_metrics = _sim(test_start, test_end)
+                wf_fold_payload.append({
+                    "train_range": [train_start, train_end],
+                    "test_range": [test_start, test_end],
+                    "train": _strip_equity(train_metrics),
+                    "test": _strip_equity(test_metrics),
+                })
+            walk_forward = assess_walk_forward(wf_fold_payload, probation=probation)
+        except Exception as exc:
+            wf_error = str(exc)
+            walk_forward = {
+                "model": "anchored_walk_forward_v2",
+                "passed": False,
+                "error": wf_error,
+                "folds": [],
+            }
+    else:
+        walk_forward = {
+            "model": "anchored_walk_forward_v2",
+            "passed": False,
+            "error": "insufficient_selection_history",
+            "folds": [],
+        }
 
-            pf_in = metrics_in.get("profit_factor", 0.0)
-            pf_out = metrics_out.get("profit_factor", 0.0)
+    wf_passed = bool(walk_forward.get("passed", False))
 
-            if pf_in > 0:
-                wf_passed = (pf_out / pf_in) >= 0.8
-            else:
-                wf_passed = pf_out > 1.0
-
-        except Exception:
-            wf_passed = False  # A walk-forward that cannot run is a fail, not a pass
-
-    # ── Holdout gate: only evaluated for strategies that already passed
-    # validation + walk-forward, on data no selection step ever touched.
-    # Probation strategies signal rarely, so the holdout naturally has few
-    # trades: the bar is "enough activity and not losing" instead. ──
-    holdout_passed = True
+    # ── Locked Holdout V2 ─────────────────────────────
+    holdout_passed = False
     holdout_clean = None
-    if wf_passed and h_idx < len(df):
+    holdout_validation = {
+        "model": "locked_holdout_v2",
+        "passed": False,
+        "error": "holdout_unavailable",
+    }
+    if wf_passed and holdout_available:
         min_h_trades = PROBATION_HOLDOUT_MIN_TRADES if probation else HOLDOUT_MIN_TRADES
         min_h_pf = PROBATION_HOLDOUT_MIN_PF if probation else HOLDOUT_MIN_PF
         try:
             hm = _sim(h_idx, len(df))
-            holdout_passed = (
-                hm.get("total_trades", 0) >= min_h_trades
-                and hm.get("profit_factor", 0.0) >= min_h_pf
-                and not hm.get("blown_account", False)
+            holdout_clean = _strip_equity(hm)
+            holdout_validation = assess_holdout(
+                hm, min_trades=min_h_trades, min_pf=min_h_pf, probation=probation
             )
-            holdout_clean = {k: v for k, v in hm.items() if k != "equity_curve"}
-        except Exception:
-            holdout_passed = False
+            holdout_passed = bool(holdout_validation.get("passed", False))
+        except Exception as exc:
+            holdout_validation = {
+                "model": "locked_holdout_v2",
+                "passed": False,
+                "error": str(exc),
+            }
+    elif wf_passed and not holdout_available:
+        # No locked holdout means no demo deployment. Research can continue,
+        # but the strategy must not be marked walk_forward_passed.
+        holdout_passed = False
 
-    # Per-regime performance (validated strategies only — 3 masked sims).
-    # paper_trade uses this to bench a strategy while the CURRENT market
-    # regime is one it demonstrably loses in.
+    validation_v2 = {
+        "model": "validation_v2",
+        "walk_forward": walk_forward,
+        "holdout": holdout_validation,
+        "holdout_available": holdout_available,
+        "passed": wf_passed and holdout_passed,
+    }
+
     regime_perf = {}
     try:
         df_reg = add_regime_indicators(df.iloc[:h_idx])
@@ -242,18 +262,17 @@ def _backtest_worker(strategy_id: str, file_path: str, df_m5_bytes: bytes,
     except Exception:
         regime_perf = {}
 
-    # Strip equity_curve for serialization
-    metrics_clean = {k: v for k, v in metrics.items() if k != "equity_curve"}
+    metrics_clean = _strip_equity(metrics)
 
     return {
         "strategy_id": strategy_id,
         "status": "validated",
         "regime_perf": regime_perf,
-        # Deployable = walk-forward AND holdout survived
         "wf_passed": wf_passed and holdout_passed,
         "wf_only": wf_passed,
         "holdout_passed": holdout_passed,
         "holdout_metrics": holdout_clean,
+        "validation_v2": validation_v2,
         "probation": probation,
         "metrics": metrics,
         "metrics_clean": metrics_clean,
@@ -272,28 +291,19 @@ class BacktestRunner(BaseAgent):
         self._data_cache: Optional[pd.DataFrame] = None
         self._data_cache_m5: Optional[pd.DataFrame] = None
         self._data_hash: Optional[str] = None
-        self._df_m5_pickle: Optional[bytes] = None  # Serialized M5 data for workers
+        self._df_m5_pickle: Optional[bytes] = None
         self._regime_cache: Optional[int] = None
 
-    # ──────────────────────────────────────────────────
-    # BaseAgent interface
-    # ──────────────────────────────────────────────────
-
     def setup(self):
-        self.logger.info("Backtest Runner ready (parallel mode, 3 workers)")
+        self.logger.info("Backtest Runner ready (parallel mode, Validation V2)")
 
     def tick(self):
-        """Process untested candidates in parallel, then limited task queue."""
         self._process_untested_parallel(batch_size=12)
         self._process_task_queue(max_per_tick=5)
         self._revalidate_deployed()
 
     def tick_interval(self) -> float:
         return self.get_config("tick_interval", 5)
-
-    # ──────────────────────────────────────────────────
-    # Task queue processing
-    # ──────────────────────────────────────────────────
 
     def _process_task_queue(self, max_per_tick: int = 5):
         tasks = self.get_pending_tasks()
@@ -319,13 +329,7 @@ class BacktestRunner(BaseAgent):
                 self.fail_task(task_id, traceback.format_exc())
                 processed += 1
 
-    # ──────────────────────────────────────────────────
-    # Parallel batch processing
-    # ──────────────────────────────────────────────────
-
     def _process_untested_parallel(self, batch_size: int = 12):
-        """Fetch a batch of untested candidates and backtest them in parallel."""
-        # Ensure data is loaded
         df_m5 = self._load_data_m5()
         if df_m5 is None:
             return
@@ -348,7 +352,6 @@ class BacktestRunner(BaseAgent):
         if not rows:
             return
 
-        # Filter out missing files before submitting
         jobs = []
         for row in rows:
             fp = row["file_path"]
@@ -362,7 +365,6 @@ class BacktestRunner(BaseAgent):
 
         self.logger.info(f"Submitting {len(jobs)} backtests to parallel pool")
 
-        # Use 3 workers (leave 1 core for main thread + other agents)
         slip = self._measured_slippage()
         results = []
         try:
@@ -386,7 +388,6 @@ class BacktestRunner(BaseAgent):
             self.logger.error(f"ProcessPool error: {exc}")
             return
 
-        # Process results in main thread (DB writes)
         validated = 0
         rejected = 0
         for r in results:
@@ -400,7 +401,6 @@ class BacktestRunner(BaseAgent):
             self.logger.info(f"Batch complete: {validated} validated, {rejected} rejected/failed")
 
     def _apply_worker_result(self, r: dict) -> str:
-        """Persist a _backtest_worker result to the DB. Returns the result status."""
         sid = r["strategy_id"]
         status = r["status"]
 
@@ -418,6 +418,8 @@ class BacktestRunner(BaseAgent):
             self._update_strategy_metrics(sid, metrics)
             if r.get("regime_perf"):
                 self._merge_best_config(sid, "regime_perf", r["regime_perf"])
+            if r.get("validation_v2"):
+                self._merge_best_config(sid, "validation_v2", r["validation_v2"])
 
             if r.get("wf_passed", False):
                 self.db.execute(
@@ -430,39 +432,25 @@ class BacktestRunner(BaseAgent):
                 label = "PROBATION (reduced size)" if probation else "full"
                 self.emit_event(
                     "milestone",
-                    f"Strategy {sid} passed validation + walk-forward + holdout [{label}]",
+                    f"Strategy {sid} passed Validation V2 + locked holdout [{label}]",
                     metadata={"strategy_id": sid,
                               "probation": probation,
                               "metrics": r.get("metrics_clean", {}),
-                              "holdout_metrics": r.get("holdout_metrics")},
+                              "validation_v2": r.get("validation_v2", {})},
                 )
-                self.logger.info(f"Strategy {sid} VALIDATED [{label}] (walk-forward + holdout passed)")
+                self.logger.info(f"Strategy {sid} VALIDATED [{label}] (Validation V2 passed)")
             else:
                 self.db.execute(
                     "UPDATE strategies SET status = 'validated', walk_forward_passed = 0 WHERE id = ?",
                     (sid,),
                 )
                 if r.get("wf_only", False) and not r.get("holdout_passed", True):
-                    hm = r.get("holdout_metrics") or {}
-                    self.logger.info(
-                        f"Strategy {sid} passed backtest+WF but FAILED holdout "
-                        f"(trades={hm.get('total_trades')}, PF={hm.get('profit_factor')})"
-                    )
+                    self.logger.info(f"Strategy {sid} passed WF V2 but FAILED locked holdout")
                 else:
-                    self.logger.info(f"Strategy {sid} passed backtest but FAILED walk-forward")
+                    self.logger.info(f"Strategy {sid} FAILED Walk-Forward V2")
         return status
 
-    # ──────────────────────────────────────────────────
-    # Data loading
-    # ──────────────────────────────────────────────────
-
     def _load_data(self) -> Optional[pd.DataFrame]:
-        """Load XAUUSD M1 data, using the largest CSV in data/raw.
-
-        Cached, but invalidated when the file changes on disk (the data
-        agent appends fresh bars daily) so validation always runs against
-        current data.
-        """
         raw_dir = DATA_DIR / "raw"
         candidates = sorted(raw_dir.glob("XAUUSD_M1*.csv"), key=lambda p: p.stat().st_size, reverse=True)
         if not candidates:
@@ -474,7 +462,6 @@ class BacktestRunner(BaseAgent):
         if self._data_cache is not None:
             if getattr(self, "_data_mtime", None) == mtime:
                 return self._data_cache
-            # Data refreshed on disk — drop all caches and reload
             self.logger.info("Data file changed on disk — reloading caches")
             self._data_cache = None
             self._data_cache_m5 = None
@@ -496,8 +483,6 @@ class BacktestRunner(BaseAgent):
         return df
 
     def _load_data_m5(self) -> Optional[pd.DataFrame]:
-        """Resample M1 data to M5. Cached until the M1 file changes on disk."""
-        # _load_data first: it clears _data_cache_m5 when the file changed
         df_m1 = self._load_data()
         if df_m1 is None:
             return None
@@ -511,9 +496,6 @@ class BacktestRunner(BaseAgent):
             "Open": "first", "High": "max", "Low": "min",
             "Close": "last", "Volume": "sum",
         }
-        # Keep the per-bar spread through the resample (worst M1 spread of the
-        # 5 minutes — conservative). Losing it made every backtest fall back
-        # to the flat DEFAULT_SPREAD.
         if "spread" in df.columns:
             agg["spread"] = "max"
         df_m5 = df.resample("5min").agg(agg).dropna().reset_index()
@@ -524,16 +506,7 @@ class BacktestRunner(BaseAgent):
     def _is_m5_strategy(self, strategy_id: str) -> bool:
         return True
 
-    # ──────────────────────────────────────────────────
-    # Strategy loading (used by task queue / single backtest)
-    # ──────────────────────────────────────────────────
-
     def _measured_slippage(self) -> Optional[float]:
-        """Median slippage measured on real fills (>= 20 samples required).
-
-        Replaces the theoretical SLIPPAGE_PER_FILL constant so backtests
-        converge to what THIS broker actually does. Cached for 1 hour.
-        """
         import time as _time
         now = _time.time()
         if getattr(self, "_slip_cache_time", 0) > now - 3600:
@@ -562,7 +535,6 @@ class BacktestRunner(BaseAgent):
         return self._slip_cache
 
     def _resolve_strategy_path(self, strategy_id: str) -> Optional[Path]:
-        """Find the strategy source file on disk. Returns the path or None."""
         row = self.db.fetchone("SELECT file_path FROM strategies WHERE id = ?", (strategy_id,))
         candidate_paths = []
 
@@ -579,7 +551,6 @@ class BacktestRunner(BaseAgent):
         return None
 
     def _load_strategy_module(self, strategy_id: str):
-        """Dynamically load a strategy module. Returns the module or None."""
         module_path = self._resolve_strategy_path(strategy_id)
         if module_path is None:
             self.logger.warning(f"Strategy file not found for {strategy_id}")
@@ -595,10 +566,6 @@ class BacktestRunner(BaseAgent):
         except Exception as exc:
             self.logger.error(f"Failed to load strategy module {module_path}: {exc}")
             return None
-
-    # ──────────────────────────────────────────────────
-    # Signal generation (used by task queue / single backtest)
-    # ──────────────────────────────────────────────────
 
     def _build_signal_series(self, df: pd.DataFrame, module) -> tuple:
         params = getattr(module, "PARAMS", {})
@@ -630,22 +597,11 @@ class BacktestRunner(BaseAgent):
 
         return signals, sl_prices, tp_prices, directions
 
-    # ──────────────────────────────────────────────────
-    # Single backtest (used by task queue)
-    # ──────────────────────────────────────────────────
-
     def run_single_backtest(self, strategy_id: str) -> Optional[dict]:
-        """Run a full backtest for strategy_id (sequential, for task queue).
-
-        Delegates to the same _backtest_worker used by the parallel path so
-        this path applies identical validation — including the walk-forward
-        test (it previously granted walk_forward_passed=1 without running it).
-        """
-        # Skip if already validated/rejected
         row_check = self.db.fetchone(
             "SELECT status FROM strategies WHERE id = ?", (strategy_id,),
         )
-        if row_check and row_check["status"] in ("validated", "rejected", "retired"):
+        if row_check and row_check["status"] in ("validated", "rejected", "retired", "portfolio_reserve"):
             return None
 
         self.logger.info(f"Running backtest for strategy {strategy_id}")
@@ -669,23 +625,10 @@ class BacktestRunner(BaseAgent):
             self._measured_slippage(),
         )
         self._apply_worker_result(result)
-        # Never return the raw metrics: the equity_curve (one float per bar)
-        # ends up json-serialized into task_queue.result and bloats the DB.
         metrics = result.get("metrics") or {}
-        return {k: v for k, v in metrics.items() if k != "equity_curve"}
-
-    # ──────────────────────────────────────────────────
-    # Result persistence
-    # ──────────────────────────────────────────────────
+        return _strip_equity(metrics)
 
     def _revalidate_deployed(self):
-        """Edge decay defense: re-run one stale deployed strategy per tick.
-
-        The dataset refreshes daily, so every REVALIDATION_DAYS each deployed
-        strategy faces the full gauntlet again on data that now includes the
-        most recent market. Pass → metrics refreshed. Fail → undeployed
-        (walk_forward_passed = 0) with a warning event; live history is kept.
-        """
         from core.config import REVALIDATION_DAYS
 
         row = self.db.fetchone(
@@ -712,7 +655,7 @@ class BacktestRunner(BaseAgent):
             self._demote_deployed(sid, "revalidation: file_missing")
             return
 
-        self.logger.info(f"Re-validating deployed strategy {sid} (edge decay check)")
+        self.logger.info(f"Re-validating deployed strategy {sid} (Validation V2)")
         result = _backtest_worker(sid, str(file_path), self._df_m5_pickle,
                                   self._data_hash, self._measured_slippage())
 
@@ -720,20 +663,19 @@ class BacktestRunner(BaseAgent):
         metrics = result.get("metrics") or {}
         still_good = status == "validated" and result.get("wf_passed", False)
 
-        # Always store a result row: it refreshes best_* when better and,
-        # in every case, restarts the REVALIDATION_DAYS clock.
         self._store_results(sid, metrics, {})
         if metrics:
             self._update_strategy_metrics(sid, metrics)
+        if result.get("validation_v2"):
+            self._merge_best_config(sid, "validation_v2", result["validation_v2"])
 
         if still_good:
-            self.logger.info(f"Strategy {sid} re-validation PASSED (still deployable)")
+            self.logger.info(f"Strategy {sid} re-validation PASSED (Validation V2)")
         else:
             reason = result.get("reason") or ", ".join(result.get("fails", [])) or status
             self._demote_deployed(sid, f"revalidation_failed: {reason}")
 
     def _demote_deployed(self, strategy_id: str, reason: str):
-        """Undeploy a strategy that no longer passes on fresh data."""
         self.db.execute(
             "UPDATE strategies SET walk_forward_passed = 0 WHERE id = ?",
             (strategy_id,),
@@ -746,8 +688,6 @@ class BacktestRunner(BaseAgent):
         self.logger.warning(f"Strategy {strategy_id} undeployed: {reason}")
 
     def _merge_best_config(self, strategy_id: str, key: str, value):
-        """Merge one key into strategies.best_config without clobbering the
-        rest (monte_carlo, sensitivity, probation all live there)."""
         row = self.db.fetchone(
             "SELECT best_config FROM strategies WHERE id = ?", (strategy_id,)
         )
@@ -759,15 +699,14 @@ class BacktestRunner(BaseAgent):
             except (json.JSONDecodeError, TypeError):
                 pass
         config[key] = value
+        if key == "validation_v2" and value.get("passed"):
+            config["metric_refresh_pending"] = False
         self.db.execute(
             "UPDATE strategies SET best_config = ? WHERE id = ?",
             (json.dumps(config), strategy_id),
         )
 
     def _mark_probation(self, strategy_id: str):
-        """Flag a probation strategy: best_config marker (merged, so Monte
-        Carlo/sensitivity data survive) + low starting confidence so the
-        gatekeeper sizes it at a quarter lot until live trades prove it."""
         row = self.db.fetchone(
             "SELECT best_config FROM strategies WHERE id = ?", (strategy_id,)
         )
@@ -834,9 +773,6 @@ class BacktestRunner(BaseAgent):
         new_pf = metrics.get("profit_factor", 0.0)
 
         if new_pf > current_pf:
-            # best_config is deliberately NOT touched here: monte_carlo and
-            # sensitivity_agent store their results (p_ruin, is_fragile) in it,
-            # and paper_trade relies on those to filter dangerous strategies.
             self.db.execute(
                 "UPDATE strategies SET "
                 "best_win_rate = ?, best_profit_factor = ?, best_max_drawdown = ?, "

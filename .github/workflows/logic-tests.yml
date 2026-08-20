@@ -41,7 +41,8 @@ jobs:
             agents/news_calendar.py \
             scripts/refresh_x10_metric_version.py \
             scripts/demo_preflight.py \
-            scripts/demo_switch.py
+            scripts/demo_switch.py \
+            scripts/force_test_trade.py
 
       - name: Run pure logic tests
         env:

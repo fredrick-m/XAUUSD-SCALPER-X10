@@ -66,10 +66,6 @@ __all__ = [
 ]
 
 
-# ══════════════════════════════════════════════
-# Regime Detection
-# ══════════════════════════════════════════════
-
 def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Add causal ADX/ATR regime labels."""
     adx_period = 14
@@ -100,10 +96,6 @@ def add_regime_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ══════════════════════════════════════════════
-# Dynamic Lot Sizing / P&L
-# ══════════════════════════════════════════════
-
 def dynamic_lot(balance: float, sl_distance: float, risk_pct: float) -> float:
     """Position size from account balance, stop distance and risk fraction."""
     if sl_distance <= 0 or balance <= 0:
@@ -118,10 +110,6 @@ def profit(entry: float, exit_: float, direction: int, lot_size: float) -> float
         return (exit_ - entry) * lot_size * PIP_VALUE
     return (entry - exit_) * lot_size * PIP_VALUE
 
-
-# ══════════════════════════════════════════════
-# X10 window research metrics
-# ══════════════════════════════════════════════
 
 def _empty_x10_metrics(horizon_days: int, target_multiple: float) -> dict:
     return {
@@ -222,12 +210,14 @@ def compute_x10_window_metrics(
         for tr in records:
             if tr["entry_day"] < start:
                 continue
+            # Records are ordered primarily by exit_day, not entry_day. A
+            # later record may therefore still have an entry inside this
+            # window; never break on entry_day here.
             if tr["entry_day"] > end:
-                break
+                continue
             if tr["exit_day"] > end:
                 continue
 
-            # Return fractions below -100% are clipped to account wipeout.
             ret = max(-1.0, tr["return_frac"])
             balance = max(0.0, balance * (1.0 + ret))
             peak = max(peak, balance)
@@ -254,8 +244,6 @@ def compute_x10_window_metrics(
         return out
 
     successes = sum(1 for w in windows if w["success"])
-
-    # Count only disjoint success episodes for the compatibility x10_count.
     independent = 0
     last_used_end = -1
     for w in windows:
@@ -287,10 +275,6 @@ def compute_x10_window_metrics(
     })
     return out
 
-
-# ══════════════════════════════════════════════
-# Core Backtest Simulator
-# ══════════════════════════════════════════════
 
 def run_simulation(
     df: pd.DataFrame,
@@ -476,7 +460,6 @@ def run_simulation(
         dd = (equity_peak - equity) / equity_peak if equity_peak > 0 else 0.0
         max_dd = max(max_dd, dd)
 
-    # Force-close an unfinished final position rather than silently excluding it.
     if in_trade and not blown_account:
         i = n_bars - 1
         if spread_override is not None:
@@ -513,7 +496,6 @@ def run_simulation(
         "win_rate": round(win_rate, 4),
         "profit_factor": round(pf, 4),
         "max_drawdown": round(max_dd, 4),
-        # Compatibility field: now = count of disjoint successful 10-day windows.
         "x10_count": int(x10["x10_10d_independent_successes"]),
         "final_balance": round(balance, 2),
         "return_pct": round((balance - INITIAL_BALANCE) / INITIAL_BALANCE * 100, 2),
@@ -523,10 +505,6 @@ def run_simulation(
     metrics.update(x10)
     return metrics
 
-
-# ══════════════════════════════════════════════
-# Validation
-# ══════════════════════════════════════════════
 
 def validate(metrics: dict, regimes_tested: int, timeframe: str = "M1") -> Tuple[bool, List[str]]:
     """Check aggregate quality plus independent X10-window evidence."""

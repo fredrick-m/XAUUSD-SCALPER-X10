@@ -1,7 +1,7 @@
 """Monte Carlo robustness agent for the X10 objective.
 
 This module deliberately avoids reconstructing closed-trade P&Ls from the
-floating equity curve.  The equity curve contains mark-to-market changes while
+floating equity curve. The equity curve contains mark-to-market changes while
 a trade is open, so treating every non-zero bar delta as a trade corrupts the
 Monte Carlo sample.
 
@@ -12,7 +12,7 @@ validated strategy statistics:
 - observed trade frequency
 - configured risk per trade
 
-The result is a MODEL ESTIMATE, not a promise of future performance.  Its main
+The result is a MODEL ESTIMATE, not a promise of future performance. Its main
 purpose is to compare strategies under the same $500 -> $5,000 / 10 trading-day
 objective and expose combinations with unacceptable drawdown/ruin risk.
 """
@@ -120,6 +120,11 @@ def monte_carlo_x10(
         idx = min(len(values) - 1, max(0, int(math.ceil(q * len(values))) - 1))
         return float(values[idx])
 
+    p_x10_10d = round(x10_hits / n, 4)
+    p_ruin_10d = round(ruin_hits / n, 4)
+    median_dd_10d = round(percentile(max_dds, 0.50), 4)
+    p95_dd_10d = round(percentile(max_dds, 0.95), 4)
+
     return {
         "model": "fixed_fraction_edge_model_v2",
         "initial_balance": round(initial_balance, 2),
@@ -130,14 +135,19 @@ def monte_carlo_x10(
         "reward_risk_input": round(reward_risk, 4),
         "risk_pct_input": round(risk_pct, 6),
         "trades_per_day": round(trades_per_day, 4),
-        "p_x10_10d": round(x10_hits / n, 4),
-        "p_ruin_10d": round(ruin_hits / n, 4),
-        "median_dd_10d": round(percentile(max_dds, 0.50), 4),
-        "p95_dd_10d": round(percentile(max_dds, 0.95), 4),
+        "p_x10_10d": p_x10_10d,
+        "p_ruin_10d": p_ruin_10d,
+        "median_dd_10d": median_dd_10d,
+        "p95_dd_10d": p95_dd_10d,
         "median_final_balance_10d": round(percentile(final_balances, 0.50), 2),
         "p05_final_balance_10d": round(percentile(final_balances, 0.05), 2),
         "p95_final_balance_10d": round(percentile(final_balances, 0.95), 2),
         "n_simulations": int(n_sims),
+        # Backward-compatible aliases consumed by paper_trade/signal_gatekeeper.
+        "p_x10": p_x10_10d,
+        "p_ruin": p_ruin_10d,
+        "median_dd": median_dd_10d,
+        "p95_dd": p95_dd_10d,
         "assumptions": [
             "independent trades",
             "stationary win rate and reward/risk",

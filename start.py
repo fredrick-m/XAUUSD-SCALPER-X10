@@ -102,8 +102,8 @@ def main():
     print("[4/5] Applying startup execution lock...")
     force_demo_off(db, "process startup")
     print("  DEMO EXECUTION: OFF")
-    print("  Preflight: python scripts/demo_preflight.py")
-    print("  Enable example: python scripts/demo_switch.py enable --profile conservative")
+    print("  Preflight: python -m scripts.demo_preflight")
+    print("  Enable example: python -m scripts.demo_switch enable --profile conservative")
 
     def handle_shutdown(_sig, _frame):
         print("\nShutdown requested...")

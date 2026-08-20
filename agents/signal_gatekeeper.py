@@ -1,5 +1,6 @@
 """Signal Gatekeeper: strict pre-trade filter for portfolio-level risk control."""
 import json
+from datetime import datetime, timezone
 from typing import Tuple
 
 from agents.base_agent import BaseAgent
@@ -15,6 +16,7 @@ MIN_MARGIN_RATIO = 1.5
 MAX_OPEN_TRADES_DEFAULT = 15
 MAX_ENTRIES_PER_WINDOW = 2
 ENTRY_WINDOW_MINUTES = 15
+NEWS_MAX_AGE_MINUTES = 90
 
 
 class SignalGatekeeper(BaseAgent):
@@ -40,6 +42,7 @@ class SignalGatekeeper(BaseAgent):
                      free_margin: float) -> Tuple[bool, str]:
         checks = [
             self._check_deployment_evidence,
+            self._check_risk_readiness,
             self._check_circuit_breaker,
             self._check_news_blackout,
             self._check_max_open_trades,
@@ -153,29 +156,66 @@ class SignalGatekeeper(BaseAgent):
 
         return True, "ok"
 
+    def _check_risk_readiness(self, ctx: dict) -> Tuple[bool, str]:
+        from agents.risk_manager import get_risk_readiness
+        ready, reason = get_risk_readiness(self.db)
+        if not ready:
+            return False, reason
+        equity = float(ctx.get("equity") or 0.0)
+        balance = float(ctx.get("balance") or 0.0)
+        free_margin = float(ctx.get("free_margin") or 0.0)
+        if equity <= 0 or balance <= 0 or free_margin < 0:
+            return False, "invalid_account_snapshot"
+        return True, "ok"
+
     def _check_circuit_breaker(self, ctx: dict) -> Tuple[bool, str]:
         row = self.db.fetchone(
             "SELECT config FROM agent_registry WHERE id = ?", ("risk_manager",)
         )
         if not row or not row["config"]:
-            return True, "ok"
+            return False, "risk_state_missing"
         try:
             config = json.loads(row["config"]) if isinstance(row["config"], str) else row["config"]
         except (json.JSONDecodeError, TypeError):
             return False, "risk_state_unreadable"
         state = config.get("risk_state", {})
+        if not state:
+            return False, "risk_state_missing"
         if state.get("circuit_breaker_active", False):
             scope = state.get("circuit_breaker_scope") or "unknown"
             return False, f"circuit_breaker_active ({scope})"
         return True, "ok"
 
     def _check_news_blackout(self, ctx: dict) -> Tuple[bool, str]:
+        row = self.db.fetchone(
+            "SELECT config FROM agent_registry WHERE id = ?", ("news_calendar",)
+        )
+        if not row or not row["config"]:
+            return False, "news_calendar_unavailable"
+        try:
+            config = json.loads(row["config"]) if isinstance(row["config"], str) else row["config"]
+        except (json.JSONDecodeError, TypeError):
+            return False, "news_calendar_unreadable"
+
+        last_fetch = config.get("last_fetch")
+        if not last_fetch:
+            return False, "news_calendar_never_fetched"
+        try:
+            fetched_at = datetime.fromisoformat(last_fetch)
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60.0
+            if age < 0 or age > NEWS_MAX_AGE_MINUTES:
+                return False, f"news_calendar_stale ({age:.0f}m)"
+        except Exception:
+            return False, "news_calendar_timestamp_invalid"
+
         try:
             from agents.news_calendar import is_blackout_period
             if is_blackout_period(self.db):
                 return False, "news_blackout"
         except Exception:
-            pass
+            return False, "news_calendar_check_failed"
         return True, "ok"
 
     def _check_max_open_trades(self, ctx: dict) -> Tuple[bool, str]:
@@ -228,11 +268,22 @@ class SignalGatekeeper(BaseAgent):
         )
         total_risk = 0.0
         for r in rows:
-            sl_dist = abs(r["entry_price"] - r["sl"]) if r["sl"] else 0
-            total_risk += r["lot"] * sl_dist * PIP_VALUE
+            lot = float(r["lot"] or 0.0)
+            entry = float(r["entry_price"] or 0.0)
+            sl = float(r["sl"] or 0.0)
+            if lot <= 0 or entry <= 0:
+                continue
+            if sl <= 0:
+                return False, "open_trade_without_stop"
+            total_risk += lot * abs(entry - sl) * PIP_VALUE
 
-        total_risk += ctx["lot"] * ctx["sl_distance"] * PIP_VALUE
-        equity = ctx.get("equity") or ctx.get("balance") or 0.0
+        candidate_lot = float(ctx.get("lot") or 0.0)
+        candidate_sl_distance = float(ctx.get("sl_distance") or 0.0)
+        if candidate_lot <= 0 or candidate_sl_distance <= 0:
+            return False, "invalid_candidate_risk"
+        total_risk += candidate_lot * candidate_sl_distance * PIP_VALUE
+
+        equity = float(ctx.get("equity") or 0.0)
         if equity <= 0:
             return False, "zero_equity"
 
@@ -243,7 +294,7 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_entry_burst(self, ctx: dict) -> Tuple[bool, str]:
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
         window_start = (
             datetime.now(timezone.utc) - timedelta(minutes=ENTRY_WINDOW_MINUTES)
         ).isoformat()
@@ -302,8 +353,10 @@ class SignalGatekeeper(BaseAgent):
 
     def _check_margin(self, ctx: dict) -> Tuple[bool, str]:
         from core.config import PIP_VALUE
-        required = ctx["lot"] * ctx["sl_distance"] * PIP_VALUE
-        available = ctx["free_margin"]
+        required = float(ctx["lot"]) * float(ctx["sl_distance"]) * PIP_VALUE
+        available = float(ctx["free_margin"])
+        if required <= 0:
+            return False, "invalid_required_margin"
         if available < required * MIN_MARGIN_RATIO:
             return False, f"insufficient_margin (need {required*MIN_MARGIN_RATIO:.2f}, have {available:.2f})"
         return True, "ok"
@@ -421,12 +474,7 @@ def gate_check(db, strategy_id: str, direction: str,
                lot: float, sl_distance: float,
                account_balance: float, account_equity: float,
                free_margin: float) -> Tuple[bool, str]:
-    """Lightweight gate entry point used by paper_trade.
-
-    BaseAgent.get_config() and emit_event() only require db, agent_id and logger,
-    so preserve the real inherited methods instead of replacing them with
-    lambdas. This keeps configured limits and gate-blocked audit events active.
-    """
+    """Lightweight gate entry point used by paper_trade."""
     gk = SignalGatekeeper.__new__(SignalGatekeeper)
     gk.db = db
     gk.agent_id = "signal_gatekeeper"

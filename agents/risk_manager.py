@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 
 from agents.base_agent import BaseAgent
-from core.config import INITIAL_BALANCE, PIP_VALUE
+from core.config import INITIAL_BALANCE, PIP_VALUE, DEFAULT_RISK_PCT
 
 
 RISK_PROFILES = {
@@ -140,7 +140,6 @@ class RiskManager(BaseAgent):
             state["daily_start_equity"] = equity
             state["daily_peak_equity"] = equity
             state["daily_drawdown"] = 0.0
-            # A daily breaker remains locked for the whole UTC trading day.
             if state.get("circuit_breaker_scope") == "daily":
                 self._clear_circuit_breaker(state, "new trading day")
 
@@ -274,19 +273,28 @@ def is_trading_allowed(db) -> bool:
     return not config.get("risk_state", {}).get("circuit_breaker_active", False)
 
 
-def get_position_scaling(db) -> float:
-    config, _ = _read_risk_config(db)
-    return float(config.get("risk_state", {}).get("current_scaling", 1.0) or 0.0)
-
-
 def get_base_risk_pct(db) -> float:
     _, profile = _read_risk_config(db)
     return float(profile["risk_per_trade"])
 
 
+def get_position_scaling(db) -> float:
+    """Compatibility factor for paper_trade's historical 4% base-risk formula.
+
+    paper_trade computes lot from DEFAULT_RISK_PCT, then multiplies by this
+    value. Returning (profile risk / default risk) * stress scale makes the
+    active risk profile apply without duplicating position-sizing logic.
+    """
+    config, profile = _read_risk_config(db)
+    stress_scale = float(config.get("risk_state", {}).get("current_scaling", 1.0) or 0.0)
+    profile_ratio = float(profile["risk_per_trade"]) / max(float(DEFAULT_RISK_PCT), 1e-9)
+    return max(0.0, profile_ratio * stress_scale)
+
+
 def get_effective_risk_pct(db) -> float:
-    """Current per-trade risk after profile selection and dynamic de-risking."""
-    return get_base_risk_pct(db) * get_position_scaling(db)
+    config, profile = _read_risk_config(db)
+    stress_scale = float(config.get("risk_state", {}).get("current_scaling", 1.0) or 0.0)
+    return float(profile["risk_per_trade"]) * stress_scale
 
 
 def get_max_open_trades(db) -> int:

@@ -12,7 +12,12 @@ def test_metric_refresh_archives_requeues_stamps_and_is_idempotent(tmp_path):
         old_config = {
             "monte_carlo": {"p_ruin": 0.01},
             "sensitivity": {"is_fragile": False},
+            "sensitivity_tested": True,
             "portfolio_selected": True,
+            "portfolio_score": 88.0,
+            "portfolio_rejection_reason": None,
+            "redundant": False,
+            "redundant_of": None,
         }
         db.execute(
             "INSERT INTO strategies "
@@ -53,9 +58,17 @@ def test_metric_refresh_archives_requeues_stamps_and_is_idempotent(tmp_path):
         config = json.loads(strategy["best_config"])
         assert config["metric_version"] == BACKTEST_METRIC_VERSION
         assert config["metric_refresh_pending"] is True
-        assert "monte_carlo" not in config
-        assert "sensitivity" not in config
-        assert "portfolio_selected" not in config
+        for stale_key in (
+            "monte_carlo",
+            "sensitivity",
+            "sensitivity_tested",
+            "portfolio_selected",
+            "portfolio_score",
+            "portfolio_rejection_reason",
+            "redundant",
+            "redundant_of",
+        ):
+            assert stale_key not in config
 
         # Simulate the existing runner inserting a fresh V2 result with
         # config=None. The migration trigger must stamp it automatically.
@@ -75,7 +88,6 @@ def test_metric_refresh_archives_requeues_stamps_and_is_idempotent(tmp_path):
         assert second["already_applied"] is True
         archived_again = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results_archive")
         assert archived_again["n"] == 1
-        # Re-running the same migration must not archive the new V2 row.
         active_again = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results")
         assert active_again["n"] == 1
     finally:

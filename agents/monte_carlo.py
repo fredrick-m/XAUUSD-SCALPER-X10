@@ -1,20 +1,8 @@
-"""Monte Carlo robustness agent for the X10 objective.
+"""Monte Carlo robustness agent for the X10 research objective.
 
-This module deliberately avoids reconstructing closed-trade P&Ls from the
-floating equity curve. The equity curve contains mark-to-market changes while
-a trade is open, so treating every non-zero bar delta as a trade corrupts the
-Monte Carlo sample.
-
-Instead we simulate a normalized fixed-fraction risk model from independently
-validated strategy statistics:
-- historical win rate
-- reward/risk ratio (prefer strategy TP/SL params; otherwise implied by PF+WR)
-- observed trade frequency
-- configured risk per trade
-
-The result is a MODEL ESTIMATE, not a promise of future performance. Its main
-purpose is to compare strategies under the same $500 -> $5,000 / 10 trading-day
-objective and expose combinations with unacceptable drawdown/ruin risk.
+The model uses normalized fixed-fraction outcomes inferred from validated
+strategy statistics. It is comparative robustness evidence, not a promise of
+future returns.
 """
 
 import json
@@ -33,9 +21,11 @@ from core.config import (
     MC_RUIN_BALANCE_FRACTION,
 )
 
+ANALYSIS_PER_FAMILY = 8
+MC_MAX_PER_TICK = 8
+
 
 def _implied_reward_risk(win_rate: float, profit_factor: float) -> float:
-    """Infer average win / average loss from PF and WR."""
     if win_rate <= 0 or win_rate >= 1 or profit_factor <= 0:
         return 1.0
     rr = profit_factor * (1.0 - win_rate) / win_rate
@@ -62,7 +52,6 @@ def monte_carlo_x10(
 
     target = initial_balance * target_multiple
     ruin_floor = initial_balance * ruin_balance_fraction
-
     x10_hits = 0
     ruin_hits = 0
     max_dds = []
@@ -74,25 +63,21 @@ def monte_carlo_x10(
         max_dd = 0.0
         hit_target = False
         ruined = False
-
         for _trade in range(horizon_trades):
             if random.random() < win_rate:
                 balance *= 1.0 + risk_pct * reward_risk
             else:
                 balance *= 1.0 - risk_pct
-
             if balance > peak:
                 peak = balance
             dd = (peak - balance) / peak if peak > 0 else 1.0
             max_dd = max(max_dd, dd)
-
             if balance >= target:
                 hit_target = True
                 break
             if balance <= ruin_floor:
                 ruined = True
                 break
-
         x10_hits += int(hit_target)
         ruin_hits += int(ruined)
         max_dds.append(max_dd)
@@ -112,7 +97,6 @@ def monte_carlo_x10(
     p_ruin_10d = round(ruin_hits / n, 4)
     median_dd_10d = round(percentile(max_dds, 0.50), 4)
     p95_dd_10d = round(percentile(max_dds, 0.95), 4)
-
     return {
         "model": "fixed_fraction_edge_model_v2",
         "initial_balance": round(initial_balance, 2),
@@ -156,13 +140,16 @@ class MonteCarlo(BaseAgent):
     def setup(self):
         self._bt_runner = BacktestRunner(self.db)
         self._bt_runner.setup()
-        self.logger.info("Monte Carlo V2 ready — $500 -> $5,000 / 10-day model")
+        self.logger.info(
+            f"Monte Carlo V2 ready — up to {ANALYSIS_PER_FAMILY} variants/family"
+        )
 
     def tick(self):
         strategies = self._get_untested_strategies()
         if not strategies:
             return
-        for strategy in strategies:
+        max_per_tick = max(1, int(self.get_config("max_per_tick", MC_MAX_PER_TICK)))
+        for strategy in strategies[:max_per_tick]:
             try:
                 self._run_mc_for_strategy(strategy["id"])
             except Exception as exc:
@@ -175,12 +162,13 @@ class MonteCarlo(BaseAgent):
         return self.get_config("tick_interval", 300)
 
     def _get_untested_strategies(self) -> list:
-        """Top WF variants per family needing MC, including portfolio reserves.
+        """WF variants needing MC, including portfolio reserves.
 
-        Portfolio V5 may reserve a strategy specifically because MC evidence is
-        still missing. Reserves must therefore remain visible to this agent or
-        the pipeline deadlocks permanently.
+        The analysis breadth matches Portfolio V5's max-per-family capacity so
+        the system can build a portfolio larger than 100 strategies instead of
+        being hard-capped by a top-3 evidence bottleneck.
         """
+        per_family = max(1, int(self.get_config("analysis_per_family", ANALYSIS_PER_FAMILY)))
         rows = self.db.fetchall(
             "SELECT id, best_config FROM ("
             "  SELECT id, best_config, ROW_NUMBER() OVER ("
@@ -188,7 +176,8 @@ class MonteCarlo(BaseAgent):
             "  ) AS rn FROM strategies "
             "  WHERE status IN ('validated','portfolio_reserve') "
             "  AND walk_forward_passed = 1"
-            ") WHERE rn <= 3"
+            ") WHERE rn <= ? ORDER BY rn, id",
+            (per_family,),
         )
         untested = []
         for row in rows:
@@ -263,7 +252,6 @@ class MonteCarlo(BaseAgent):
         trades_per_day = trades / trading_days
         risk_pct = float(metrics.get("risk_pct") or DEFAULT_RISK_PCT)
         n_sims = int(self.get_config("n_simulations", 10000))
-
         result = monte_carlo_x10(
             win_rate=wr,
             reward_risk=reward_risk,
@@ -300,7 +288,6 @@ class MonteCarlo(BaseAgent):
         self.emit_event(
             event_type,
             f"Monte Carlo V2 {strategy_id}: P(x10/10d)={result['p_x10_10d']:.1%}, "
-            f"P(ruin/10d)={result['p_ruin_10d']:.1%}, "
-            f"P95 DD={result['p95_dd_10d']:.1%}",
+            f"P(ruin/10d)={result['p_ruin_10d']:.1%}, P95 DD={result['p95_dd_10d']:.1%}",
             metadata={"strategy_id": strategy_id, "monte_carlo": result},
         )

@@ -17,6 +17,7 @@ MAX_OPEN_TRADES_DEFAULT = 15
 MAX_ENTRIES_PER_WINDOW = 2
 ENTRY_WINDOW_MINUTES = 15
 NEWS_MAX_AGE_MINUTES = 90
+PER_TRADE_RISK_TOLERANCE = 1.05
 
 
 class SignalGatekeeper(BaseAgent):
@@ -43,6 +44,7 @@ class SignalGatekeeper(BaseAgent):
         checks = [
             self._check_deployment_evidence,
             self._check_risk_readiness,
+            self._check_per_trade_risk,
             self._check_circuit_breaker,
             self._check_news_blackout,
             self._check_max_open_trades,
@@ -89,7 +91,6 @@ class SignalGatekeeper(BaseAgent):
             return False, f"strategy_not_portfolio_validated ({row['status']})"
         if not row["walk_forward_passed"]:
             return False, "walk_forward_not_passed"
-
         config = {}
         if row["best_config"]:
             try:
@@ -100,7 +101,6 @@ class SignalGatekeeper(BaseAgent):
             return False, "stale_metric_version"
         if config.get("metric_refresh_pending", True):
             return False, "metric_refresh_pending"
-
         validation = config.get("validation_v2")
         if not isinstance(validation, dict) or not validation.get("passed", False):
             return False, "validation_v2_missing_or_failed"
@@ -110,7 +110,6 @@ class SignalGatekeeper(BaseAgent):
             return False, "locked_holdout_unavailable"
         if not validation.get("holdout", {}).get("passed", False):
             return False, "locked_holdout_failed"
-
         mc = config.get("monte_carlo")
         if not isinstance(mc, dict) or mc.get("model") != "fixed_fraction_edge_model_v2":
             return False, "monte_carlo_v2_missing"
@@ -122,13 +121,11 @@ class SignalGatekeeper(BaseAgent):
                 return False, "monte_carlo_ruin_too_high"
         except (TypeError, ValueError):
             return False, "monte_carlo_ruin_invalid"
-
         sensitivity = config.get("sensitivity")
         if not config.get("sensitivity_tested", False) or not isinstance(sensitivity, dict):
             return False, "sensitivity_missing"
         if sensitivity.get("is_fragile", False):
             return False, "sensitivity_fragile"
-
         statistical = config.get("statistical_evidence")
         if not isinstance(statistical, dict) or not statistical.get("passed", False):
             return False, "statistical_evidence_missing_or_failed"
@@ -151,6 +148,25 @@ class SignalGatekeeper(BaseAgent):
         free_margin = float(ctx.get("free_margin") or 0.0)
         if equity <= 0 or balance <= 0 or free_margin < 0:
             return False, "invalid_account_snapshot"
+        return True, "ok"
+
+    def _check_per_trade_risk(self, ctx: dict) -> Tuple[bool, str]:
+        """Block broker-minimum lots that exceed the active risk budget."""
+        from core.config import PIP_VALUE
+        from agents.risk_manager import get_effective_risk_pct
+        equity = float(ctx.get("equity") or 0.0)
+        lot = float(ctx.get("lot") or 0.0)
+        sl_distance = float(ctx.get("sl_distance") or 0.0)
+        effective_risk = float(get_effective_risk_pct(self.db) or 0.0)
+        if equity <= 0 or lot <= 0 or sl_distance <= 0 or effective_risk <= 0:
+            return False, "per_trade_risk_not_ready"
+        actual_risk = lot * sl_distance * PIP_VALUE
+        max_risk = equity * effective_risk
+        if actual_risk > max_risk * PER_TRADE_RISK_TOLERANCE:
+            return False, (
+                f"per_trade_risk_exceeded (${actual_risk:.2f} > ${max_risk:.2f}, "
+                f"effective={effective_risk:.2%})"
+            )
         return True, "ok"
 
     def _check_circuit_breaker(self, ctx: dict) -> Tuple[bool, str]:
@@ -177,11 +193,9 @@ class SignalGatekeeper(BaseAgent):
             config = json.loads(row["config"]) if isinstance(row["config"], str) else row["config"]
         except (json.JSONDecodeError, TypeError):
             return False, "news_calendar_unreadable"
-
         if config.get("calendar_verified") is not True:
             source = config.get("calendar_source") or "unknown"
             return False, f"news_calendar_unverified ({source})"
-
         last_fetch = config.get("last_fetch")
         if not last_fetch:
             return False, "news_calendar_never_fetched"
@@ -194,7 +208,6 @@ class SignalGatekeeper(BaseAgent):
                 return False, f"news_calendar_stale ({age:.0f}m)"
         except Exception:
             return False, "news_calendar_timestamp_invalid"
-
         try:
             from agents.news_calendar import is_blackout_period
             if is_blackout_period(self.db):
@@ -213,10 +226,7 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_strategy_already_open(self, ctx: dict) -> Tuple[bool, str]:
-        row = self.db.fetchone(
-            "SELECT COUNT(*) as cnt FROM live_trades WHERE strategy_id = ? AND status = 'open'",
-            (ctx["strategy_id"],),
-        )
+        row = self.db.fetchone("SELECT COUNT(*) as cnt FROM live_trades WHERE strategy_id = ? AND status = 'open'", (ctx["strategy_id"],))
         open_count = (row["cnt"] or 0) if row else 0
         if open_count >= MAX_OPEN_PER_STRATEGY:
             return False, f"strategy_already_open ({ctx['strategy_id']})"
@@ -269,10 +279,7 @@ class SignalGatekeeper(BaseAgent):
     def _check_entry_burst(self, ctx: dict) -> Tuple[bool, str]:
         from datetime import timedelta
         window_start = (datetime.now(timezone.utc) - timedelta(minutes=ENTRY_WINDOW_MINUTES)).isoformat()
-        row = self.db.fetchone(
-            "SELECT COUNT(*) AS cnt FROM live_trades WHERE direction = ? AND opened_at >= ?",
-            (ctx["direction"], window_start),
-        )
+        row = self.db.fetchone("SELECT COUNT(*) AS cnt FROM live_trades WHERE direction = ? AND opened_at >= ?", (ctx["direction"], window_start))
         recent = (row["cnt"] or 0) if row else 0
         if recent >= MAX_ENTRIES_PER_WINDOW:
             return False, f"entry_burst ({recent} {ctx['direction']} entries in last {ENTRY_WINDOW_MINUTES}min)"
@@ -290,9 +297,7 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_confidence_score(self, ctx: dict) -> Tuple[bool, str]:
-        row = self.db.fetchone(
-            "SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],),
-        )
+        row = self.db.fetchone("SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],))
         if not row:
             return True, "ok"
         score = row["confidence_score"] or 50.0
@@ -302,9 +307,7 @@ class SignalGatekeeper(BaseAgent):
         return True, "ok"
 
     def _check_live_win_rate(self, ctx: dict) -> Tuple[bool, str]:
-        row = self.db.fetchone(
-            "SELECT total_trades, live_win_rate FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],),
-        )
+        row = self.db.fetchone("SELECT total_trades, live_win_rate FROM strategy_live_stats WHERE strategy_id = ?", (ctx["strategy_id"],))
         if not row:
             return True, "ok"
         total = row["total_trades"] or 0
@@ -357,10 +360,7 @@ class SignalGatekeeper(BaseAgent):
                 score += 15
             regimes = r["regimes_passed"] or 0
             score += min(10, regimes * 5)
-            live = self.db.fetchone(
-                "SELECT total_trades, live_win_rate, live_profit_factor FROM strategy_live_stats WHERE strategy_id = ?",
-                (r["id"],),
-            )
+            live = self.db.fetchone("SELECT total_trades, live_win_rate, live_profit_factor FROM strategy_live_stats WHERE strategy_id = ?", (r["id"],))
             live_trades = (live["total_trades"] or 0) if live else 0
             live_wr = (live["live_win_rate"] or 0) if live else 0
             if live_trades >= MIN_LIVE_TRADES_FOR_WR:
@@ -373,10 +373,8 @@ class SignalGatekeeper(BaseAgent):
                 if not graduated:
                     score = min(score, 45.0)
             plateau = self.db.fetchone(
-                "SELECT COUNT(*) AS n_tested, "
-                "SUM(CASE WHEN v.pf >= 1.3 AND v.dd <= 0.25 AND v.trades >= 30 THEN 1 ELSE 0 END) AS n_good "
-                "FROM (SELECT strategy_id, MAX(profit_factor) AS pf, MAX(total_trades) AS trades, "
-                "MIN(max_drawdown) AS dd FROM backtest_results GROUP BY strategy_id) v "
+                "SELECT COUNT(*) AS n_tested, SUM(CASE WHEN v.pf >= 1.3 AND v.dd <= 0.25 AND v.trades >= 30 THEN 1 ELSE 0 END) AS n_good "
+                "FROM (SELECT strategy_id, MAX(profit_factor) AS pf, MAX(total_trades) AS trades, MIN(max_drawdown) AS dd FROM backtest_results GROUP BY strategy_id) v "
                 "JOIN strategies c ON c.id = v.strategy_id WHERE c.parent_strategy = ?", (r["id"],),
             )
             n_tested = (plateau["n_tested"] or 0) if plateau else 0
@@ -391,15 +389,8 @@ class SignalGatekeeper(BaseAgent):
                     score = min(score, 35.0)
                 if n_tested >= 15 and n_good == 0:
                     self.db.execute("UPDATE strategies SET walk_forward_passed = 0 WHERE id = ?", (r["id"],))
-                    self.emit_event(
-                        "warning",
-                        f"Strategy {r['id']} UNDEPLOYED: isolated peak (0/{n_tested} burst neighbors validated)",
-                        metadata={"strategy_id": r["id"], "n_tested": n_tested},
-                    )
-            self.db.execute(
-                "INSERT INTO strategy_live_stats (strategy_id, confidence_score) VALUES (?, ?) "
-                "ON CONFLICT(strategy_id) DO UPDATE SET confidence_score = ?", (r["id"], score, score),
-            )
+                    self.emit_event("warning", f"Strategy {r['id']} UNDEPLOYED: isolated peak (0/{n_tested} burst neighbors validated)", metadata={"strategy_id": r["id"], "n_tested": n_tested})
+            self.db.execute("INSERT INTO strategy_live_stats (strategy_id, confidence_score) VALUES (?, ?) ON CONFLICT(strategy_id) DO UPDATE SET confidence_score = ?", (r["id"], score, score))
 
     def get_lot_scaling(self, strategy_id: str) -> float:
         row = self.db.fetchone("SELECT confidence_score FROM strategy_live_stats WHERE strategy_id = ?", (strategy_id,))

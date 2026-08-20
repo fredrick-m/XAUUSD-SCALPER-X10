@@ -1,22 +1,8 @@
 """One-time migration for a new backtest metric version.
 
-The runner only processes a candidate when no active ``backtest_results`` row
-exists. Therefore a metric-semantic change cannot be handled by changing the
-strategy status alone: old rows must leave the active results table.
-
-This migration preserves history by copying every active result into
-``backtest_results_archive`` before clearing the active table. It also removes
-derived deployment evidence (Monte Carlo, sensitivity, statistical/portfolio
-state) and re-queues every non-retired strategy for the current engine.
-
-A SQLite trigger stamps future active results with ``BACKTEST_METRIC_VERSION``
-when the runner leaves ``backtest_results.config`` empty. This avoids coupling
-the runner implementation to a one-time migration while still making every
-new active result self-identifying.
-
-The operation is idempotent per ``BACKTEST_METRIC_VERSION`` through the
-``metric_migrations`` table. Running the script twice for the same version does
-nothing destructive the second time.
+Old active results are archived, all derived deployment evidence is invalidated,
+and non-retired strategies are re-queued. A trigger stamps future active
+backtests with the current metric version. The migration is idempotent.
 """
 from __future__ import annotations
 
@@ -31,11 +17,15 @@ from core.db import Database
 DERIVED_KEYS = {
     "monte_carlo",
     "sensitivity",
+    "sensitivity_tested",
     "statistical_evidence",
     "chronological_stability",
     "portfolio",
     "portfolio_selected",
     "portfolio_score",
+    "portfolio_rejection_reason",
+    "redundant",
+    "redundant_of",
     "regime_perf",
     "probation",
     "validation_v2",
@@ -70,9 +60,7 @@ def _ensure_tables(db: Database) -> None:
 
 
 def _install_version_trigger(db: Database) -> None:
-    """Stamp rows inserted by the existing runner when config is NULL."""
     payload = json.dumps({"metric_version": BACKTEST_METRIC_VERSION})
-    # Version changes replace the trigger definition during the next migration.
     db.execute("DROP TRIGGER IF EXISTS stamp_backtest_metric_version")
     escaped = payload.replace("'", "''")
     db.execute(
@@ -95,7 +83,6 @@ def refresh(db: Database) -> dict:
         (BACKTEST_METRIC_VERSION,),
     )
     if existing:
-        # Repair/reinstall the harmless trigger even on repeated runs.
         _install_version_trigger(db)
         return {
             "metric_version": BACKTEST_METRIC_VERSION,
@@ -106,7 +93,6 @@ def refresh(db: Database) -> dict:
         }
 
     now = datetime.now(timezone.utc).isoformat()
-
     count_row = db.fetchone("SELECT COUNT(*) AS n FROM backtest_results")
     archived_count = int(count_row["n"] or 0) if count_row else 0
 
@@ -133,7 +119,6 @@ def refresh(db: Database) -> dict:
         config = _parse_config(row["best_config"])
         for key in DERIVED_KEYS:
             config.pop(key, None)
-
         config["metric_version"] = BACKTEST_METRIC_VERSION
         config["metric_refresh_pending"] = True
 

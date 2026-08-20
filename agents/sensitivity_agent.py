@@ -13,22 +13,18 @@ from agents.base_agent import BaseAgent
 from core.config import DATA_DIR, STRATEGIES_DIR, DEFAULT_RISK_PCT
 from engine.backtest import run_simulation, validate
 
-
-# Parameters to perturb and the perturbation factors
 PERTURBATION_FACTORS = [0.7, 0.8, 0.9, 1.1, 1.2, 1.3]
-# Keys inside PARAMS that are numeric and worth perturbing
 TUNABLE_KEYS = [
     "sl_atr", "tp_atr", "atr_period", "ema_fast", "ema_slow",
     "rsi_period", "rsi_upper", "rsi_lower", "adx_period", "adx_threshold",
     "bb_period", "bb_std", "macd_fast", "macd_slow", "macd_signal",
     "lookback", "threshold", "period", "window",
 ]
-# Max PF degradation allowed at ±10% perturbation
-MAX_PF_DROP_10PCT = 0.50  # 50% drop → fragile
+MAX_PF_DROP_10PCT = 0.50
 
 
 class SensitivityAgent(BaseAgent):
-    """Perturbs each tunable parameter of validated strategies to detect overfitting."""
+    """Perturbs tunable parameters of WF+holdout survivors."""
 
     name = "sensitivity_agent"
 
@@ -36,15 +32,10 @@ class SensitivityAgent(BaseAgent):
         super().__init__(agent_id="sensitivity_agent", db=db)
         self._data_cache: Optional[pd.DataFrame] = None
 
-    # ──────────────────────────────────────────────────
-    # BaseAgent interface
-    # ──────────────────────────────────────────────────
-
     def setup(self):
         self.logger.info("Sensitivity Analyzer Agent ready")
 
     def tick(self):
-        """Find validated strategies that haven't been sensitivity-tested."""
         strategies = self._get_untested_strategies()
         if not strategies:
             return
@@ -64,10 +55,6 @@ class SensitivityAgent(BaseAgent):
 
     def tick_interval(self) -> float:
         return self.get_config("tick_interval", 300)
-
-    # ──────────────────────────────────────────────────
-    # Data loading
-    # ──────────────────────────────────────────────────
 
     def _load_data(self) -> Optional[pd.DataFrame]:
         if self._data_cache is not None:
@@ -94,10 +81,6 @@ class SensitivityAgent(BaseAgent):
         self._data_cache = df
         return df
 
-    # ──────────────────────────────────────────────────
-    # Strategy loading
-    # ──────────────────────────────────────────────────
-
     def _load_strategy_module(self, strategy_id: str):
         row = self.db.fetchone("SELECT file_path FROM strategies WHERE id = ?", (strategy_id,))
         candidate_paths = []
@@ -121,40 +104,41 @@ class SensitivityAgent(BaseAgent):
                     return None
         return None
 
-    # ──────────────────────────────────────────────────
-    # Untested strategy retrieval
-    # ──────────────────────────────────────────────────
-
     def _get_untested_strategies(self) -> list:
-        # Deployable only (top-3 per family): sensitivity analysis is heavy
-        # and plateau clones would burn CPU the backtest queue needs.
+        """Top WF variants per family needing sensitivity, including reserves.
+
+        Portfolio V5 can reserve a strategy because sensitivity is missing, so
+        this agent must still see ``portfolio_reserve`` or the pipeline stalls.
+        """
         rows = self.db.fetchall(
             "SELECT id, best_config FROM ("
             "  SELECT id, best_config, ROW_NUMBER() OVER ("
             "    PARTITION BY family ORDER BY best_profit_factor DESC"
             "  ) AS rn FROM strategies "
-            "  WHERE status = 'validated' AND walk_forward_passed = 1"
+            "  WHERE status IN ('validated','portfolio_reserve') "
+            "  AND walk_forward_passed = 1"
             ") WHERE rn <= 3"
         )
         untested = []
         for row in rows:
             config = {}
             if row["best_config"]:
-                config = (
-                    json.loads(row["best_config"])
-                    if isinstance(row["best_config"], str)
-                    else row["best_config"]
-                )
+                try:
+                    config = (
+                        json.loads(row["best_config"])
+                        if isinstance(row["best_config"], str)
+                        else row["best_config"]
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    config = {}
+            validation = config.get("validation_v2", {})
+            if not validation.get("passed", False):
+                continue
             if not config.get("sensitivity_tested"):
                 untested.append(dict(row))
         return untested
 
-    # ──────────────────────────────────────────────────
-    # Core sensitivity analysis
-    # ──────────────────────────────────────────────────
-
     def _run_backtest_with_params(self, df: pd.DataFrame, module, params: dict) -> Optional[dict]:
-        """Run a backtest with custom params on the module."""
         sl_atr = params.get("sl_atr", 1.5)
         tp_atr = params.get("tp_atr", 2.5)
 
@@ -201,8 +185,6 @@ class SensitivityAgent(BaseAgent):
             return
 
         base_params = copy.deepcopy(getattr(module, "PARAMS", {}))
-
-        # Baseline run
         baseline_metrics = self._run_backtest_with_params(df, module, base_params)
         if baseline_metrics is None:
             self._mark_tested(strategy_id, None)
@@ -213,11 +195,16 @@ class SensitivityAgent(BaseAgent):
             self._mark_tested(strategy_id, None)
             return
 
-        # Find tunable keys in this strategy's PARAMS
-        tunable = [k for k in base_params if k in TUNABLE_KEYS and isinstance(base_params[k], (int, float))]
+        tunable = [
+            k for k in base_params
+            if k in TUNABLE_KEYS and isinstance(base_params[k], (int, float))
+        ]
         if not tunable:
             self.logger.info(f"No tunable parameters found for {strategy_id}")
-            self._mark_tested(strategy_id, {"robust": True, "reason": "no_tunable_params"})
+            self._mark_tested(
+                strategy_id,
+                {"robust": True, "is_fragile": False, "reason": "no_tunable_params"},
+            )
             return
 
         results = {}
@@ -228,14 +215,11 @@ class SensitivityAgent(BaseAgent):
             for factor in PERTURBATION_FACTORS:
                 perturbed_params = copy.deepcopy(base_params)
                 original_val = base_params[key]
-
-                # For integer params, round the perturbed value
                 new_val = original_val * factor
                 if isinstance(original_val, int):
                     new_val = max(1, round(new_val))
 
                 perturbed_params[key] = new_val
-
                 metrics = self._run_backtest_with_params(df, module, perturbed_params)
                 if metrics is None:
                     key_results.append({
@@ -246,7 +230,6 @@ class SensitivityAgent(BaseAgent):
 
                 perturbed_pf = metrics.get("profit_factor", 0.0)
                 pf_ratio = perturbed_pf / baseline_pf if baseline_pf > 0 else 0.0
-
                 key_results.append({
                     "factor": round(factor, 2),
                     "value": round(new_val, 4) if isinstance(new_val, float) else new_val,
@@ -255,19 +238,17 @@ class SensitivityAgent(BaseAgent):
                     "pf_ratio": round(pf_ratio, 4),
                 })
 
-                # Check if ±10% perturbation causes >50% PF drop
                 if factor in (0.9, 1.1) and pf_ratio < (1.0 - MAX_PF_DROP_10PCT):
                     is_fragile = True
 
             results[key] = key_results
 
-        # Compute overall robustness score: average PF ratio across all perturbations
-        all_ratios = []
-        for key_results in results.values():
-            for r in key_results:
-                if not r.get("error"):
-                    all_ratios.append(r["pf_ratio"])
-
+        all_ratios = [
+            r["pf_ratio"]
+            for key_results in results.values()
+            for r in key_results
+            if not r.get("error")
+        ]
         robustness_score = round(np.mean(all_ratios), 4) if all_ratios else 0.0
 
         sensitivity_result = {
@@ -276,7 +257,6 @@ class SensitivityAgent(BaseAgent):
             "is_fragile": is_fragile,
             "param_results": results,
         }
-
         self._mark_tested(strategy_id, sensitivity_result)
 
         if is_fragile:
@@ -290,7 +270,9 @@ class SensitivityAgent(BaseAgent):
                 f"(robustness={robustness_score:.2f})",
                 metadata={"strategy_id": strategy_id, "sensitivity": sensitivity_result},
             )
-            self.logger.warning(f"Strategy {strategy_id} is FRAGILE (robustness={robustness_score:.2f})")
+            self.logger.warning(
+                f"Strategy {strategy_id} is FRAGILE (robustness={robustness_score:.2f})"
+            )
         else:
             self.emit_event(
                 "milestone",
@@ -306,11 +288,14 @@ class SensitivityAgent(BaseAgent):
         )
         config = {}
         if row and row["best_config"]:
-            config = (
-                json.loads(row["best_config"])
-                if isinstance(row["best_config"], str)
-                else row["best_config"]
-            )
+            try:
+                config = (
+                    json.loads(row["best_config"])
+                    if isinstance(row["best_config"], str)
+                    else row["best_config"]
+                )
+            except (json.JSONDecodeError, TypeError):
+                config = {}
         config["sensitivity_tested"] = True
         if result is not None:
             config["sensitivity"] = result

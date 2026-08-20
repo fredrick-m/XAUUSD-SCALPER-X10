@@ -9,9 +9,14 @@ This migration preserves history by copying every active result into
 derived deployment evidence (Monte Carlo, sensitivity, statistical/portfolio
 state) and re-queues every non-retired strategy for the current engine.
 
+A SQLite trigger stamps future active results with ``BACKTEST_METRIC_VERSION``
+when the runner leaves ``backtest_results.config`` empty. This avoids coupling
+the runner implementation to a one-time migration while still making every
+new active result self-identifying.
+
 The operation is idempotent per ``BACKTEST_METRIC_VERSION`` through the
 ``metric_migrations`` table. Running the script twice for the same version does
-nothing the second time.
+nothing destructive the second time.
 """
 from __future__ import annotations
 
@@ -56,12 +61,27 @@ def _ensure_tables(db: Database) -> None:
         "archived_results INTEGER NOT NULL DEFAULT 0, "
         "requeued_strategies INTEGER NOT NULL DEFAULT 0)"
     )
-
     db.execute(
         "CREATE TABLE IF NOT EXISTS backtest_results_archive AS "
         "SELECT b.*, CAST(NULL AS TEXT) AS archived_metric_version, "
         "CAST(NULL AS TEXT) AS archived_at "
         "FROM backtest_results b WHERE 0"
+    )
+
+
+def _install_version_trigger(db: Database) -> None:
+    """Stamp rows inserted by the existing runner when config is NULL."""
+    payload = json.dumps({"metric_version": BACKTEST_METRIC_VERSION})
+    # Version changes replace the trigger definition during the next migration.
+    db.execute("DROP TRIGGER IF EXISTS stamp_backtest_metric_version")
+    escaped = payload.replace("'", "''")
+    db.execute(
+        "CREATE TRIGGER stamp_backtest_metric_version "
+        "AFTER INSERT ON backtest_results "
+        "WHEN NEW.config IS NULL "
+        "BEGIN "
+        f"UPDATE backtest_results SET config='{escaped}' WHERE id=NEW.id; "
+        "END"
     )
 
 
@@ -75,6 +95,8 @@ def refresh(db: Database) -> dict:
         (BACKTEST_METRIC_VERSION,),
     )
     if existing:
+        # Repair/reinstall the harmless trigger even on repeated runs.
+        _install_version_trigger(db)
         return {
             "metric_version": BACKTEST_METRIC_VERSION,
             "already_applied": True,
@@ -126,6 +148,7 @@ def refresh(db: Database) -> dict:
         )
         requeued += 1
 
+    _install_version_trigger(db)
     db.execute(
         "INSERT INTO metric_migrations "
         "(metric_version, applied_at, archived_results, requeued_strategies) "

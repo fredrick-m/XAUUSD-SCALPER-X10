@@ -19,7 +19,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from core.config import BACKTEST_METRIC_VERSION
+from core.config import BACKTEST_METRIC_VERSION, DB_PATH
 from core.db import Database
 
 
@@ -57,9 +57,6 @@ def _ensure_tables(db: Database) -> None:
         "requeued_strategies INTEGER NOT NULL DEFAULT 0)"
     )
 
-    # CREATE TABLE AS intentionally mirrors whatever backtest_results schema
-    # exists on this installation and adds two audit columns. Historical rows
-    # are never consumed by the live selection pipeline.
     db.execute(
         "CREATE TABLE IF NOT EXISTS backtest_results_archive AS "
         "SELECT b.*, CAST(NULL AS TEXT) AS archived_metric_version, "
@@ -92,9 +89,6 @@ def refresh(db: Database) -> dict:
     archived_count = int(count_row["n"] or 0) if count_row else 0
 
     if archived_count:
-        # backtest_results_archive was created as: all source columns + 2 audit
-        # columns, so SELECT b.*, ?, ? remains valid even if the source schema
-        # gains ordinary columns before this migration is run.
         db.execute(
             "INSERT INTO backtest_results_archive "
             "SELECT b.*, ?, ? FROM backtest_results b",
@@ -118,10 +112,6 @@ def refresh(db: Database) -> dict:
         for key in DERIVED_KEYS:
             config.pop(key, None)
 
-        # This marker means "queued for this engine version", not "passed".
-        # A future runner enhancement may stamp per-result evidence separately;
-        # until then, the active backtest_results table itself contains only
-        # results produced after this migration.
         config["metric_version"] = BACKTEST_METRIC_VERSION
         config["metric_refresh_pending"] = True
 
@@ -154,9 +144,12 @@ def refresh(db: Database) -> dict:
 
 
 def main() -> None:
-    db = Database()
-    result = refresh(db)
-    print(json.dumps(result, indent=2))
+    db = Database(DB_PATH)
+    try:
+        result = refresh(db)
+        print(json.dumps(result, indent=2))
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

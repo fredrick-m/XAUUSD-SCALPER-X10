@@ -1,4 +1,5 @@
-"""Strategy Factory Agent: uses Claude to generate novel XAUUSD M1 trading strategies."""
+"""Strategy Factory V2: edge-aware generation of novel XAUUSD strategies."""
+import random
 import re
 import textwrap
 from pathlib import Path
@@ -8,287 +9,255 @@ from agents.base_agent import BaseAgent
 from agents.model_router import ModelRouter
 from core.config import STRATEGIES_DIR
 
-# ── Strategy type catalogue ────────────────────────────────────────────────────
 STRATEGY_TYPES = [
-    "momentum_burst",
-    "range_breakout",
-    "order_block",
-    "pullback_in_trend",
-    "session_breakout",
-    "volume_anomaly",
-    "multi_tf_confluence",
-    "candle_pattern",
-    "mean_reversion",
-    "momentum_divergence",
-    "stochastic_rsi_scalp",
-    "ichimoku_cloud_scalp",
-    "supertrend_flip",
-    "parabolic_sar_reversal",
-    "fibonacci_retracement",
-    "support_resistance_bounce",
-    "fake_breakout_reversal",
-    "liquidity_sweep",
-    "vwap_deviation_scalp",
-    "bollinger_squeeze_breakout",
-    "keltner_channel_scalp",
-    "donchian_channel_breakout",
-    "gap_momentum_scalp",
-    "price_action_engulfing",
-    "elder_ray_impulse",
-    "williams_r_extreme",
-    "multi_rsi_confluence",
-    "atr_expansion_momentum",
-    "triple_ema_ribbon",
+    "momentum_burst", "range_breakout", "order_block", "pullback_in_trend",
+    "session_breakout", "volume_anomaly", "multi_tf_confluence", "candle_pattern",
+    "mean_reversion", "momentum_divergence", "stochastic_rsi_scalp",
+    "ichimoku_cloud_scalp", "supertrend_flip", "parabolic_sar_reversal",
+    "fibonacci_retracement", "support_resistance_bounce", "fake_breakout_reversal",
+    "liquidity_sweep", "vwap_deviation_scalp", "bollinger_squeeze_breakout",
+    "keltner_channel_scalp", "donchian_channel_breakout", "gap_momentum_scalp",
+    "price_action_engulfing", "elder_ray_impulse", "williams_r_extreme",
+    "multi_rsi_confluence", "atr_expansion_momentum", "triple_ema_ribbon",
     "trend_exhaustion_reversal",
 ]
 
+# Family research policy. Families are never permanently deleted: a small
+# exploration probability allows revisiting an old idea after the market/data
+# changes, while most generation budget goes to families showing evidence.
+FAMILY_MIN_EVALUATED = 20
+FAMILY_MIN_EDGE_PF = 1.05
+FAMILY_GOOD_PF = 1.20
+FAMILY_MIN_GOOD_RATIO = 0.10
+FAMILY_REEXPLORE_PROB = 0.08
 
-# ── Validation ─────────────────────────────────────────────────────────────────
 
 def validate_strategy_code(code: str) -> Tuple[bool, str]:
-    """
-    Check that generated strategy code is syntactically correct and meets
-    the minimum structural requirements.
-
-    Returns (is_valid, error_message).  error_message is "" on success.
-    """
-    # 1. Syntax check
     try:
         compile(code, "<generated>", "exec")
     except SyntaxError as exc:
         return False, f"SyntaxError: {exc}"
-
-    # 2. Must import pandas
     if "import pandas" not in code:
         return False, "Missing 'import pandas'"
-
-    # 3. Must define PARAMS dict
     if "PARAMS" not in code:
         return False, "Missing PARAMS dict"
-
-    # 4. Must define generate_signals function
     if "generate_signals" not in code:
         return False, "Missing generate_signals function"
-
-    # 5. Must set a 'signal' column somewhere
     if '"signal"' not in code and "'signal'" not in code:
         return False, "Missing 'signal' column assignment"
-
     return True, ""
 
 
-# ── Helper: strip markdown fences ─────────────────────────────────────────────
-
 def _strip_code_fences(text: str) -> str:
-    """Remove ```python … ``` or ``` … ``` wrappers from LLM output."""
-    # Match optional language tag after opening fence
     pattern = r"```(?:python)?\s*\n?(.*?)```"
     match = re.search(pattern, text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # If no fences found, return as-is (may already be raw code)
-    return text.strip()
+    return match.group(1).strip() if match else text.strip()
 
-
-# ── Agent ──────────────────────────────────────────────────────────────────────
 
 class StrategyFactory(BaseAgent):
-    """Generates new trading strategies via the Claude API and registers them."""
+    """Generate candidates while allocating research budget by family edge."""
 
     name = "strategy_factory"
 
     def __init__(self, db):
         super().__init__(agent_id="strategy_factory", db=db)
 
-    # ── lifecycle ──────────────────────────────────────────────────────────────
-
     def setup(self):
-        self.logger.info("Strategy Factory ready")
+        self.logger.info("Strategy Factory V2 ready")
         STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
 
     def tick(self):
+        # Prevent the LLM factory from outrunning backtesting by thousands of
+        # candidates. Template/evolution agents still have their own queues.
+        pending = self.db.fetchone(
+            "SELECT COUNT(*) AS n FROM strategies s "
+            "LEFT JOIN backtest_results b ON b.strategy_id=s.id "
+            "WHERE s.created_by='strategy_factory' AND s.status='candidate' AND b.id IS NULL"
+        )
+        max_pending = int(self.get_config("max_pending", 200))
+        if pending and int(pending["n"] or 0) >= max_pending:
+            self.logger.info(f"Factory queue full ({pending['n']}/{max_pending})")
+            return
+
         strategy_type = self._choose_strategy_type()
-        self.logger.info(f"Generating strategy type: {strategy_type}")
-        self.emit_event("info", f"Generating strategy: {strategy_type}")
+        self.logger.info(f"Generating family: {strategy_type}")
+        self.emit_event("info", f"Generating strategy family: {strategy_type}")
 
         code = self._generate_strategy(strategy_type)
-
         is_valid, error = validate_strategy_code(code)
         if not is_valid:
-            self.logger.warning(f"Generated code invalid ({error}), attempting fix")
             code = self._fix_strategy_code(code, error)
             is_valid, error = validate_strategy_code(code)
             if not is_valid:
-                self.logger.error(f"Could not fix strategy code: {error}")
-                self.emit_event("error", f"Strategy generation failed after fix attempt: {error}")
+                self.emit_event("error", f"Strategy generation failed: {error}")
                 return
 
         strategy_id = self._next_strategy_id()
         file_name = f"strategy_{strategy_id.lower()}.py"
         file_path = STRATEGIES_DIR / file_name
-
         file_path.write_text(code, encoding="utf-8")
-        self.logger.info(f"Saved strategy to {file_path}")
 
-        self._register_strategy(
-            strategy_id=strategy_id,
-            file_path=str(file_path),
-            family=strategy_type,
-            description=f"Auto-generated {strategy_type} strategy",
+        stats = self._family_stats().get(strategy_type, {})
+        description = (
+            f"Factory V2 {strategy_type} | tested={stats.get('evaluated', 0)} "
+            f"good_ratio={stats.get('good_ratio', 0.0):.2f} max_pf={stats.get('max_pf', 0.0):.2f}"
         )
-
+        self._register_strategy(strategy_id, str(file_path), strategy_type, description)
         self.post_task(
-            target_agent="backtest_runner",
-            task_type="backtest",
-            payload={"strategy_id": strategy_id, "file_path": str(file_path)},
-            priority=5,
+            target_agent="backtest_runner", task_type="backtest",
+            payload={"strategy_id": strategy_id, "file_path": str(file_path)}, priority=5,
         )
-        self.emit_event("milestone", f"Strategy {strategy_id} registered and queued for backtest")
+        self.emit_event("milestone", f"Strategy {strategy_id} ({strategy_type}) queued")
 
     def tick_interval(self) -> float:
-        return self.get_config("tick_interval", 3600)
+        return self.get_config("tick_interval", 300)
 
-    # ── strategy selection ─────────────────────────────────────────────────────
+    def _family_stats(self) -> dict:
+        """Summarize actual tested evidence for every research family."""
+        rows = self.db.fetchall(
+            "SELECT s.family, COUNT(DISTINCT s.id) AS attempted, "
+            "COUNT(DISTINCT CASE WHEN b.id IS NOT NULL THEN s.id END) AS evaluated, "
+            "MAX(COALESCE(s.best_profit_factor,0)) AS max_pf, "
+            "SUM(CASE WHEN x.best_pf >= ? THEN 1 ELSE 0 END) AS good "
+            "FROM strategies s "
+            "LEFT JOIN backtest_results b ON b.strategy_id=s.id "
+            "LEFT JOIN (SELECT strategy_id, MAX(profit_factor) AS best_pf "
+            "           FROM backtest_results GROUP BY strategy_id) x ON x.strategy_id=s.id "
+            "WHERE s.family IS NOT NULL GROUP BY s.family",
+            (FAMILY_GOOD_PF,),
+        )
+        stats = {}
+        for r in rows:
+            evaluated = int(r["evaluated"] or 0)
+            good = int(r["good"] or 0)
+            stats[r["family"]] = {
+                "attempted": int(r["attempted"] or 0),
+                "evaluated": evaluated,
+                "max_pf": float(r["max_pf"] or 0.0),
+                "good_ratio": good / evaluated if evaluated else 0.0,
+            }
+        return stats
+
+    @staticmethod
+    def _family_is_cold(s: dict) -> bool:
+        """Cold = enough evidence and still almost no sign of edge."""
+        return (
+            int(s.get("evaluated", 0)) >= FAMILY_MIN_EVALUATED
+            and float(s.get("max_pf", 0.0)) < FAMILY_MIN_EDGE_PF
+            and float(s.get("good_ratio", 0.0)) < FAMILY_MIN_GOOD_RATIO
+        )
 
     def _choose_strategy_type(self) -> str:
-        """
-        Prefer strategy types that have never been attempted.
-        Fall back to the least-tried type.
-        """
-        rows = self.db.fetchall(
-            "SELECT family, COUNT(*) as cnt FROM strategies GROUP BY family"
-        )
-        tried = {row["family"]: row["cnt"] for row in rows}
+        """Balance exploration, exploitation and automatic family cooling."""
+        stats = self._family_stats()
 
-        untried = [t for t in STRATEGY_TYPES if t not in tried]
+        untried = [f for f in STRATEGY_TYPES if stats.get(f, {}).get("attempted", 0) == 0]
         if untried:
-            return untried[0]
+            return random.choice(untried)
 
-        # All types tried — pick the one with fewest strategies
-        return min(STRATEGY_TYPES, key=lambda t: tried.get(t, 0))
+        cold = [f for f in STRATEGY_TYPES if self._family_is_cold(stats.get(f, {}))]
+        active = [f for f in STRATEGY_TYPES if f not in cold]
 
-    # ── prompt building ────────────────────────────────────────────────────────
+        # Occasionally retest a cooled family so regime/data changes can revive it.
+        if cold and random.random() < FAMILY_REEXPLORE_PROB:
+            return min(cold, key=lambda f: stats.get(f, {}).get("attempted", 0))
+
+        if not active:
+            active = STRATEGY_TYPES[:]
+
+        # UCB-like research score: reward actual good ratio/max PF, but also
+        # under-sampled families. This avoids both clone factories and starving
+        # promising families after only a few attempts.
+        def research_score(f: str) -> float:
+            s = stats.get(f, {})
+            attempted = float(s.get("attempted", 0))
+            evaluated = float(s.get("evaluated", 0))
+            max_pf = min(float(s.get("max_pf", 0.0)), 3.0)
+            good_ratio = float(s.get("good_ratio", 0.0))
+            evidence = 2.0 * good_ratio + 0.6 * max(0.0, max_pf - 1.0)
+            exploration = 2.0 / ((evaluated + 1.0) ** 0.5)
+            saturation_penalty = min(attempted / 200.0, 1.0) * 0.5
+            return evidence + exploration - saturation_penalty + random.uniform(0, 0.05)
+
+        return max(active, key=research_score)
 
     def _build_generation_prompt(self, strategy_type: str = "momentum_burst") -> str:
-        """Build the detailed LLM prompt for strategy generation."""
-
-        # Pull top-performing strategies from DB for context
         top_rows = self.db.fetchall(
-            "SELECT id, family, description, best_win_rate, best_profit_factor "
-            "FROM strategies WHERE status != 'rejected' "
-            "ORDER BY best_profit_factor DESC LIMIT 3"
+            "SELECT id, family, best_win_rate, best_profit_factor, best_max_drawdown "
+            "FROM strategies WHERE status IN ('validated','portfolio_reserve') "
+            "ORDER BY best_profit_factor DESC LIMIT 5"
         )
-        context_block = ""
+        context = ""
         if top_rows:
-            lines = ["Current best strategies for context:"]
-            for r in top_rows:
-                lines.append(
-                    f"  - {r['id']} ({r['family']}): WR={r['best_win_rate']}, PF={r['best_profit_factor']}"
-                )
-            context_block = "\n".join(lines) + "\n\n"
+            context = "Existing strong ideas (DO NOT clone them):\n" + "\n".join(
+                f"- {r['id']} family={r['family']} WR={r['best_win_rate']} PF={r['best_profit_factor']} DD={r['best_max_drawdown']}"
+                for r in top_rows
+            ) + "\n\n"
 
-        prompt = textwrap.dedent(f"""\
-            You are an expert algorithmic trading engineer specialising in XAUUSD (Gold/USD) M1 scalping.
+        return textwrap.dedent(f"""\
+            You are a quantitative trading researcher building diverse XAUUSD M5 scalping systems.
 
-            {context_block}Your task: generate a complete, self-contained Python strategy module for the
-            strategy type: **{strategy_type}**
+            {context}Generate ONE complete Python strategy in family: {strategy_type}.
 
-            === HARD REQUIREMENTS ===
-            1. The file must define a dict named PARAMS containing all numeric hyper-parameters
-               (e.g. periods, multipliers, thresholds).  Example:
-               PARAMS = {{"ema_fast": 5, "ema_slow": 20, "atr_period": 14, "sl_atr": 1.5, "tp_atr": 3.0}}
+            RESEARCH GOAL:
+            - Produce a genuinely different edge, not a cosmetic parameter variation.
+            - Prefer causal price/volatility/session/volume structure over indicator stacking.
+            - The strategy will face next-bar execution, spread, slippage, holdout,
+              walk-forward, Monte Carlo, sensitivity and correlation filters.
+            - Never optimize for a claimed win rate. Generate falsifiable logic.
+            - Avoid look-ahead/repainting and any future-bar information.
 
-            2. The file must define exactly this function signature:
-               def generate_signals(df: pd.DataFrame, p: dict = PARAMS) -> pd.DataFrame:
-               The function must add a column named "signal" with values 1 (long), -1 (short), 0 (flat)
-               and return the modified DataFrame.
+            HARD REQUIREMENTS:
+            1. Define numeric PARAMS, including sl_atr and tp_atr.
+            2. Define exactly: def generate_signals(df: pd.DataFrame, p: dict = PARAMS) -> pd.DataFrame
+            3. Add ATR column named "ATR" and signal values in {{-1,0,1}}.
+            4. Allowed imports: pandas as pd, numpy as np, ta.
+            5. Do not import MetaTrader5, yfinance or data/network clients.
+            6. Avoid simple MA crossover as the main entry logic.
+            7. Use only information available at or before each bar.
+            8. Keep parameters few enough to reduce overfitting (prefer <=12 numeric knobs).
+            9. Start with a docstring documenting Family, Hypothesis, Timeframe,
+               Entry, Exit, Failure mode and Parameters.
 
-            3. Imports allowed: pandas as pd, numpy as np, ta (the `ta` library).
-               Do NOT import MetaTrader5, yfinance, or any paid data feed.
-
-            4. Do NOT use simple EMA/SMA crossovers — they are already well-covered.
-               Use {strategy_type}-specific logic with meaningful edge.
-
-            5. Include ATR-based stop-loss and take-profit logic inside generate_signals or in a helper
-               (columns "sl" and "tp" in the returned DataFrame are encouraged but not required).
-
-            6. The code must be valid Python 3.10+.  No syntax errors.
-
-            7. Start with a docstring block that documents: Strategy name, Family, Goal, Timeframe,
-               Description, Parameters, Entry, Exit.
-
-            === OUTPUT FORMAT ===
-            Return ONLY the raw Python source code, no markdown fences, no explanation.
-            The output must start with triple-quoted docstring or an import statement.
+            Return ONLY raw Python source code.
         """)
-        return prompt
-
-    # ── code generation ────────────────────────────────────────────────────────
 
     def _generate_strategy(self, strategy_type: str) -> str:
-        """Call the LLM to generate strategy code for the given type."""
-        model = ModelRouter.route_task("generate_strategy")  # -> "opus"
-        prompt = self._build_generation_prompt(strategy_type)
+        model = ModelRouter.route_task("generate_strategy")
         raw = self.call_llm(
-            prompt=prompt,
-            model=model,
-            task_type="generate_strategy",
-            max_tokens=4096,
-            temperature=0.8,
+            prompt=self._build_generation_prompt(strategy_type), model=model,
+            task_type="generate_strategy", max_tokens=4096, temperature=0.9,
         )
         return _strip_code_fences(raw)
 
     def _fix_strategy_code(self, code: str, error: str) -> str:
-        """Ask Claude (sonnet — cheaper) to repair invalid generated code."""
         fix_prompt = textwrap.dedent(f"""\
-            The following Python strategy code is invalid.
-            Error: {error}
+            Repair this XAUUSD strategy. Error: {error}
+            Preserve its trading hypothesis. Ensure valid Python, import pandas as pd,
+            define PARAMS, ATR, and generate_signals(df, p=PARAMS) producing signal -1/0/1.
+            Do not introduce future-data/look-ahead logic.
+            Return ONLY corrected source code.
 
-            Fix the code so that:
-            - It has no syntax errors
-            - It imports pandas (import pandas as pd)
-            - It defines a dict named PARAMS
-            - It defines: def generate_signals(df, p=PARAMS): ... that sets df["signal"] and returns df
-
-            Return ONLY the corrected Python source code, no markdown, no explanation.
-
-            === CODE TO FIX ===
             {code}
         """)
         raw = self.call_llm(
-            prompt=fix_prompt,
-            model="sonnet",
-            task_type="debug_strategy",
-            max_tokens=4096,
-            temperature=0.3,
+            prompt=fix_prompt, model="sonnet", task_type="debug_strategy",
+            max_tokens=4096, temperature=0.2,
         )
         return _strip_code_fences(raw)
 
-    # ── DB helpers ─────────────────────────────────────────────────────────────
-
     def _next_strategy_id(self) -> str:
-        """
-        Generate the next sequential generated-strategy ID (G0001, G0002, …).
-        """
-        row = self.db.fetchone(
-            "SELECT id FROM strategies WHERE id LIKE 'G%' ORDER BY id DESC LIMIT 1"
-        )
+        row = self.db.fetchone("SELECT id FROM strategies WHERE id LIKE 'G%' ORDER BY id DESC LIMIT 1")
         if row:
-            last_num = int(row["id"][1:])
-            return f"G{last_num + 1:04d}"
+            try:
+                return f"G{int(row['id'][1:]) + 1:04d}"
+            except ValueError:
+                pass
         return "G0001"
 
-    def _register_strategy(
-        self,
-        strategy_id: str,
-        file_path: str,
-        family: str,
-        description: str,
-    ) -> None:
-        """Insert a new strategy record into the strategies table."""
+    def _register_strategy(self, strategy_id: str, file_path: str, family: str, description: str) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO strategies "
-            "(id, file_path, family, description, created_by, status) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(id, file_path, family, description, created_by, status) VALUES (?, ?, ?, ?, ?, ?)",
             (strategy_id, file_path, family, description, self.agent_id, "candidate"),
         )

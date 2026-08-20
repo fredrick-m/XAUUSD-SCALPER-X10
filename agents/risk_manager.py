@@ -3,18 +3,17 @@
 Safety invariants
 -----------------
 - Drawdown anchors are created only from a real MT5 account equity sample.
-  ``INITIAL_BALANCE`` is never used as a live drawdown anchor.
 - Trading is fail-closed while MT5 equity is unavailable.
-- A weekly drawdown lock always dominates a daily lock and survives daily
-  resets until the next UTC trading week.
-- State is persisted in agent_registry so restarts do not forgive drawdown.
+- Demo execution has an explicit master switch, default OFF.
+- A weekly drawdown lock always dominates a daily lock.
+- State is persisted so restarts do not forgive drawdown.
 """
 import json
 from datetime import datetime, timezone
 from typing import Optional
 
 from agents.base_agent import BaseAgent
-from core.config import INITIAL_BALANCE, PIP_VALUE, DEFAULT_RISK_PCT
+from core.config import PIP_VALUE, DEFAULT_RISK_PCT
 
 
 RISK_PROFILES = {
@@ -54,10 +53,14 @@ class RiskManager(BaseAgent):
         super().__init__(agent_id="risk_manager", db=db)
 
     def setup(self):
+        # Explicit human-controlled switch. Never inherit an implicit ON state
+        # from the absence of a config key.
+        if self.get_config("demo_execution_enabled", None) is None:
+            self.set_config("demo_execution_enabled", False)
+
         state = self.get_config("risk_state") or {}
         now = datetime.now(timezone.utc)
         equity = self._current_equity()
-
         defaults = {
             "circuit_breaker_active": False,
             "circuit_breaker_reason": None,
@@ -92,7 +95,8 @@ class RiskManager(BaseAgent):
         self.set_config("risk_state", state)
         self.logger.info(
             f"Risk Engine V2 ready — profile={self._profile_name()} "
-            f"equity_ready={bool(state.get('equity_ready'))}"
+            f"equity_ready={bool(state.get('equity_ready'))} "
+            f"demo_execution={bool(self.get_config('demo_execution_enabled', False))}"
         )
 
     def tick(self):
@@ -100,7 +104,6 @@ class RiskManager(BaseAgent):
         now = datetime.now(timezone.utc)
         profile = self._profile()
         equity = self._current_equity()
-
         self._process_trade_events(state)
 
         if equity is None:
@@ -114,7 +117,6 @@ class RiskManager(BaseAgent):
 
         self._ensure_equity_anchors(state, equity, now)
         self._reset_periods_if_needed(state, equity, now)
-
         state["equity_ready"] = True
         state["equity_source"] = "mt5"
         state["current_equity"] = equity
@@ -124,26 +126,18 @@ class RiskManager(BaseAgent):
         weekly_peak = float(state.get("weekly_peak_equity") or equity)
         state["daily_peak_equity"] = max(daily_peak, equity)
         state["weekly_peak_equity"] = max(weekly_peak, equity)
-
         state["daily_drawdown"] = self._drawdown_from_reference(
             equity,
-            max(
-                float(state.get("daily_start_equity") or equity),
-                float(state["daily_peak_equity"]),
-            ),
+            max(float(state.get("daily_start_equity") or equity), float(state["daily_peak_equity"])),
         )
         state["weekly_drawdown"] = self._drawdown_from_reference(
             equity,
-            max(
-                float(state.get("weekly_start_equity") or equity),
-                float(state["weekly_peak_equity"]),
-            ),
+            max(float(state.get("weekly_start_equity") or equity), float(state["weekly_peak_equity"])),
         )
 
         open_row = self.db.fetchone("SELECT COUNT(*) AS cnt FROM live_trades WHERE status='open'")
         state["open_trades"] = int(open_row["cnt"] or 0) if open_row else 0
         state["portfolio_heat"] = self._calculate_portfolio_heat(equity)
-
         self._evaluate_breakers(state, profile)
         state["current_scaling"] = self._dynamic_scaling(state, profile)
         self.set_config("risk_state", state)
@@ -179,7 +173,6 @@ class RiskManager(BaseAgent):
         return None
 
     def _ensure_equity_anchors(self, state: dict, equity: float, now: datetime):
-        """Initialize anchors only from MT5 and preserve valid anchors on restart."""
         anchors_valid = (
             state.get("equity_anchor_source") == "mt5"
             and state.get("daily_start_equity") is not None
@@ -187,7 +180,6 @@ class RiskManager(BaseAgent):
             and state.get("daily_peak_equity") is not None
             and state.get("weekly_peak_equity") is not None
         )
-
         if not anchors_valid:
             state["daily_reset_date"] = now.strftime("%Y-%m-%d")
             state["weekly_reset_date"] = now.strftime("%Y-%W")
@@ -198,19 +190,14 @@ class RiskManager(BaseAgent):
             state["daily_drawdown"] = 0.0
             state["weekly_drawdown"] = 0.0
             state["equity_anchor_source"] = "mt5"
-
         state["equity_ready"] = True
         state["equity_source"] = "mt5"
         state["current_equity"] = equity
         state["last_equity_at"] = now.isoformat()
-
-        # A readiness lock is temporary and can clear only after a real equity
-        # sample arrives. Daily/weekly locks are deliberately preserved.
         if state.get("circuit_breaker_scope") == "readiness":
             self._clear_circuit_breaker(state, "MT5 equity available")
 
     def _lock_for_equity_unavailable(self, state: dict):
-        """Fail closed until MT5 account equity can be observed."""
         if state.get("circuit_breaker_active"):
             return
         state["circuit_breaker_active"] = True
@@ -224,7 +211,6 @@ class RiskManager(BaseAgent):
         )
 
     def _reset_periods_if_needed(self, state: dict, equity: float, now: datetime):
-        # Weekly reset first: a weekly lock may clear only on a new week.
         week = now.strftime("%Y-%W")
         if state.get("weekly_reset_date") != week:
             state["weekly_reset_date"] = week
@@ -241,31 +227,25 @@ class RiskManager(BaseAgent):
             state["daily_start_equity"] = equity
             state["daily_peak_equity"] = equity
             state["daily_drawdown"] = 0.0
-            # Never clear a weekly lock on a daily boundary.
             if state.get("circuit_breaker_scope") == "daily":
                 self._clear_circuit_breaker(state, "new trading day")
 
     def _evaluate_breakers(self, state: dict, profile: dict):
-        """Weekly risk dominates daily risk, including promotion from daily."""
         weekly_dd = float(state.get("weekly_drawdown", 0.0) or 0.0)
         daily_dd = float(state.get("daily_drawdown", 0.0) or 0.0)
-
         if weekly_dd >= profile["max_weekly_dd"]:
             if state.get("circuit_breaker_scope") != "weekly":
                 self._trip_circuit_breaker(
                     state, "weekly_dd", "weekly", weekly_dd, profile["max_weekly_dd"]
                 )
             return
-
         if daily_dd >= profile["max_daily_dd"] and not state.get("circuit_breaker_active"):
             self._trip_circuit_breaker(
                 state, "daily_dd", "daily", daily_dd, profile["max_daily_dd"]
             )
 
     def _calculate_portfolio_heat(self, equity: float) -> float:
-        rows = self.db.fetchall(
-            "SELECT lot, sl, entry_price FROM live_trades WHERE status='open'"
-        )
+        rows = self.db.fetchall("SELECT lot, sl, entry_price FROM live_trades WHERE status='open'")
         total_risk = 0.0
         for r in rows:
             lot = float(r["lot"] or 0.0)
@@ -274,12 +254,9 @@ class RiskManager(BaseAgent):
             if lot <= 0 or entry <= 0:
                 continue
             if sl <= 0:
-                # An open trade without a stop is treated as at least 100% of
-                # current equity risk rather than silently as zero risk.
                 total_risk += equity
                 continue
-            sl_dist = abs(entry - sl)
-            total_risk += lot * sl_dist * PIP_VALUE
+            total_risk += lot * abs(entry - sl) * PIP_VALUE
         return total_risk / equity if equity > 0 else 1.0
 
     def _process_trade_events(self, state: dict):
@@ -301,35 +278,24 @@ class RiskManager(BaseAgent):
                 state["last_processed_event_id"] = row["id"]
 
     def _dynamic_scaling(self, state: dict, profile: dict) -> float:
-        """Reduce risk as drawdown/heat/loss streak deteriorate; never increase it."""
-        if not state.get("equity_ready", False):
+        if not state.get("equity_ready", False) or state.get("circuit_breaker_active"):
             return 0.0
-        if state.get("circuit_breaker_active"):
-            return 0.0
-
         scale = 1.0
-        daily_ratio = float(state.get("daily_drawdown", 0.0) or 0.0) / max(
-            profile["max_daily_dd"], 1e-9
-        )
-        weekly_ratio = float(state.get("weekly_drawdown", 0.0) or 0.0) / max(
-            profile["max_weekly_dd"], 1e-9
-        )
+        daily_ratio = float(state.get("daily_drawdown", 0.0) or 0.0) / max(profile["max_daily_dd"], 1e-9)
+        weekly_ratio = float(state.get("weekly_drawdown", 0.0) or 0.0) / max(profile["max_weekly_dd"], 1e-9)
         stress = max(daily_ratio, weekly_ratio)
-
         if stress >= 0.75:
             scale *= 0.25
         elif stress >= 0.50:
             scale *= 0.50
         elif stress >= 0.25:
             scale *= 0.75
-
         losses = int(state.get("consecutive_losses", 0) or 0)
         max_losses = int(profile["max_consecutive_losses"])
         if losses >= max_losses:
             scale *= 0.50
         elif losses >= max(2, max_losses - 2):
             scale *= 0.75
-
         heat = float(state.get("portfolio_heat", 0.0) or 0.0)
         heat_limit = max(profile["max_portfolio_heat"], 1e-9)
         if heat >= heat_limit:
@@ -338,12 +304,9 @@ class RiskManager(BaseAgent):
             scale *= 0.50
         elif heat >= 0.60 * heat_limit:
             scale *= 0.75
-
         return round(max(0.10, min(scale, 1.0)), 4)
 
-    def _trip_circuit_breaker(
-        self, state: dict, reason: str, scope: str, current_dd: float, limit: float,
-    ):
+    def _trip_circuit_breaker(self, state: dict, reason: str, scope: str, current_dd: float, limit: float):
         previous_scope = state.get("circuit_breaker_scope")
         state["circuit_breaker_active"] = True
         state["circuit_breaker_reason"] = reason
@@ -351,19 +314,13 @@ class RiskManager(BaseAgent):
         state["current_scaling"] = 0.0
         self.emit_event(
             "warning",
-            f"CIRCUIT BREAKER: {reason} — DD={current_dd:.2%} >= {limit:.2%}. "
-            f"Locked until next {scope} reset.",
+            f"CIRCUIT BREAKER: {reason} — DD={current_dd:.2%} >= {limit:.2%}. Locked until next {scope} reset.",
             metadata={
-                "reason": reason,
-                "scope": scope,
-                "previous_scope": previous_scope,
-                "current_dd": current_dd,
-                "limit": limit,
+                "reason": reason, "scope": scope, "previous_scope": previous_scope,
+                "current_dd": current_dd, "limit": limit,
             },
         )
-        self.logger.warning(
-            f"Circuit breaker locked ({scope}): {current_dd:.2%} >= {limit:.2%}"
-        )
+        self.logger.warning(f"Circuit breaker locked ({scope}): {current_dd:.2%} >= {limit:.2%}")
 
     def _clear_circuit_breaker(self, state: dict, reason: str):
         state["circuit_breaker_active"] = False
@@ -372,15 +329,16 @@ class RiskManager(BaseAgent):
         self.emit_event("info", f"Circuit breaker cleared: {reason}")
 
     def _emit_risk_status(self, state: dict, profile: dict):
+        enabled = bool(self.get_config("demo_execution_enabled", False))
         self.emit_event(
             "risk_status",
-            f"Risk[{self._profile_name()}]: equity_ready={bool(state.get('equity_ready'))}, "
-            f"dailyDD={state.get('daily_drawdown', 0):.2%}, "
-            f"weeklyDD={state.get('weekly_drawdown', 0):.2%}, "
-            f"scale={state.get('current_scaling', 0):.0%}, "
-            f"heat={state.get('portfolio_heat', 0):.1%}, "
+            f"Risk[{self._profile_name()}]: demo={'ON' if enabled else 'OFF'}, "
+            f"equity_ready={bool(state.get('equity_ready'))}, "
+            f"dailyDD={state.get('daily_drawdown', 0):.2%}, weeklyDD={state.get('weekly_drawdown', 0):.2%}, "
+            f"scale={state.get('current_scaling', 0):.0%}, heat={state.get('portfolio_heat', 0):.1%}, "
             f"CB={'ACTIVE' if state.get('circuit_breaker_active') else 'off'}",
             metadata={
+                "demo_execution_enabled": enabled,
                 "risk_profile": self._profile_name(),
                 "risk_per_trade": profile["risk_per_trade"],
                 "equity_ready": state.get("equity_ready", False),
@@ -403,11 +361,7 @@ def _read_risk_config(db) -> tuple[dict, dict]:
     config = {}
     if row and row["config"]:
         try:
-            config = (
-                json.loads(row["config"])
-                if isinstance(row["config"], str)
-                else dict(row["config"])
-            )
+            config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
         except (json.JSONDecodeError, TypeError, ValueError):
             config = {}
     name = config.get("risk_profile", DEFAULT_RISK_PROFILE)
@@ -416,12 +370,14 @@ def _read_risk_config(db) -> tuple[dict, dict]:
     return config, RISK_PROFILES[name]
 
 
-def is_trading_allowed(db) -> bool:
+def is_demo_execution_enabled(db) -> bool:
     config, _ = _read_risk_config(db)
-    state = config.get("risk_state", {})
-    return bool(state.get("equity_ready", False)) and not state.get(
-        "circuit_breaker_active", True
-    )
+    return config.get("demo_execution_enabled") is True
+
+
+def is_trading_allowed(db) -> bool:
+    ready, _ = get_risk_readiness(db)
+    return ready
 
 
 def get_base_risk_pct(db) -> float:
@@ -430,15 +386,11 @@ def get_base_risk_pct(db) -> float:
 
 
 def get_position_scaling(db) -> float:
-    """Compatibility factor for paper_trade's historical 4% base-risk formula.
-
-    Fail closed until a real MT5 equity sample has initialized Risk Engine V2.
-    """
     config, profile = _read_risk_config(db)
     state = config.get("risk_state", {})
-    if not state.get("equity_ready", False):
+    if config.get("demo_execution_enabled") is not True:
         return 0.0
-    if state.get("circuit_breaker_active", False):
+    if not state.get("equity_ready", False) or state.get("circuit_breaker_active", False):
         return 0.0
     stress_scale = float(state.get("current_scaling", 0.0) or 0.0)
     profile_ratio = float(profile["risk_per_trade"]) / max(float(DEFAULT_RISK_PCT), 1e-9)
@@ -448,6 +400,8 @@ def get_position_scaling(db) -> float:
 def get_effective_risk_pct(db) -> float:
     config, profile = _read_risk_config(db)
     state = config.get("risk_state", {})
+    if config.get("demo_execution_enabled") is not True:
+        return 0.0
     if not state.get("equity_ready", False) or state.get("circuit_breaker_active", False):
         return 0.0
     stress_scale = float(state.get("current_scaling", 0.0) or 0.0)
@@ -474,4 +428,6 @@ def get_risk_readiness(db) -> tuple[bool, str]:
     if state.get("circuit_breaker_active", False):
         scope = state.get("circuit_breaker_scope") or "unknown"
         return False, f"circuit_breaker_active:{scope}"
+    if config.get("demo_execution_enabled") is not True:
+        return False, "demo_execution_disabled"
     return True, "ready"

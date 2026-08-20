@@ -30,6 +30,7 @@ jobs:
       - name: Compile critical modules
         run: |
           python -m py_compile \
+            run_system.py \
             engine/backtest.py \
             agents/backtest_runner.py \
             agents/validation_v2.py \
@@ -39,7 +40,8 @@ jobs:
             agents/strategy_factory.py \
             agents/news_calendar.py \
             scripts/refresh_x10_metric_version.py \
-            scripts/demo_preflight.py
+            scripts/demo_preflight.py \
+            scripts/demo_switch.py
 
       - name: Run pure logic tests
         env:

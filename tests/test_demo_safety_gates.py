@@ -71,6 +71,7 @@ def test_minimum_lot_is_blocked_when_it_exceeds_effective_risk_budget(tmp_path):
             db,
             "risk_manager",
             {
+                "demo_execution_enabled": True,
                 "risk_profile": "conservative",
                 "risk_state": {
                     "equity_ready": True,
@@ -98,6 +99,7 @@ def test_order_within_effective_risk_budget_passes(tmp_path):
             db,
             "risk_manager",
             {
+                "demo_execution_enabled": True,
                 "risk_profile": "growth",
                 "risk_state": {
                     "equity_ready": True,

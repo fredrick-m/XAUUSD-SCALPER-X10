@@ -1,7 +1,8 @@
 """XAUUSD-SCALPER-X10 autonomous multi-agent system entry point.
 
 Every process start forces NEW MT5 demo entries OFF. Research agents may run,
-but execution requires a fresh successful ``scripts/demo_switch.py enable``.
+but execution requires a fresh successful ``scripts/demo_switch.py enable``
+with an explicitly named risk profile.
 """
 import json
 import signal
@@ -11,16 +12,49 @@ from core.db import Database
 from agents.orchestrator import Orchestrator
 
 
+def _read_agent_config(db: Database, agent_id: str) -> dict:
+    row = db.fetchone("SELECT config FROM agent_registry WHERE id=?", (agent_id,))
+    if not row or not row["config"]:
+        return {}
+    try:
+        return json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def _merge_agent_config(db: Database, agent_id: str, **values) -> None:
+    config = _read_agent_config(db, agent_id)
+    config.update(values)
+    db.execute(
+        "UPDATE agent_registry SET config=? WHERE id=?",
+        (json.dumps(config), agent_id),
+    )
+
+
+def configure_research_pipeline(db: Database) -> None:
+    """Set progressive throughput large enough for a 100+ strategy portfolio."""
+    _merge_agent_config(
+        db,
+        "monte_carlo",
+        tick_interval=300,
+        analysis_per_family=8,
+        max_per_tick=8,
+        n_simulations=10000,
+    )
+    _merge_agent_config(
+        db,
+        "sensitivity_agent",
+        tick_interval=300,
+        analysis_per_family=8,
+        max_per_tick=1,
+    )
+
+
 def force_demo_off(db: Database, reason: str) -> None:
     row = db.fetchone("SELECT config FROM agent_registry WHERE id='risk_manager'")
     if not row:
         return
-    config = {}
-    if row["config"]:
-        try:
-            config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
-        except (json.JSONDecodeError, TypeError, ValueError):
-            config = {}
+    config = _read_agent_config(db, "risk_manager")
     config["demo_execution_enabled"] = False
     db.execute(
         "UPDATE agent_registry SET config=? WHERE id='risk_manager'",
@@ -47,18 +81,19 @@ def main():
     db.init_schema()
     print(f"  DB: {DB_PATH}")
 
-    print("[2/4] Registering core agents...")
+    print("[2/4] Registering and tuning core agents...")
     orch = Orchestrator(db)
     orch.register_core_agents()
+    configure_research_pipeline(db)
 
     print("[3/4] Applying startup execution lock...")
     force_demo_off(db, "process startup")
     print("  DEMO EXECUTION: OFF")
-    print("  Enable only with: python scripts/demo_switch.py enable")
+    print("  Preflight: python scripts/demo_preflight.py")
+    print("  Enable example: python scripts/demo_switch.py enable --profile conservative")
 
     def handle_shutdown(_sig, _frame):
         print("\nShutdown requested...")
-        # Stop new entries immediately before agent shutdown begins.
         try:
             force_demo_off(db, "shutdown requested")
         finally:

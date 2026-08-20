@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from agents.base_agent import BaseAgent
+from core.config import INITIAL_BALANCE
 
 
 # Default risk limits
@@ -146,13 +147,13 @@ class RiskManager(BaseAgent):
             sl_dist = abs(r["entry_price"] - r["sl"]) if r["sl"] else 0
             total_risk += r["lot"] * sl_dist * PIP_VALUE
 
-        # Get current balance from MT5 or estimate
+        # Get current balance from MT5 or fall back to the configured research capital.
         try:
             import MetaTrader5 as mt5_mod
             account = mt5_mod.account_info()
-            balance = account.balance if account else 50.0
+            balance = account.balance if account else INITIAL_BALANCE
         except ImportError:
-            balance = 50.0
+            balance = INITIAL_BALANCE
 
         return total_risk / balance if balance > 0 else 0.0
 
@@ -179,13 +180,14 @@ class RiskManager(BaseAgent):
                 meta = json.loads(row["metadata"]) if row["metadata"] else {}
                 pnl = meta.get("pnl", 0.0)
 
-                # Calculate pnl_pct from actual balance
+                # Calculate pnl_pct from actual balance; use configured capital only
+                # when MT5 account info is unavailable.
                 try:
                     import MetaTrader5 as mt5_mod
                     account = mt5_mod.account_info()
-                    balance = account.balance if account else 50.0
+                    balance = account.balance if account else INITIAL_BALANCE
                 except ImportError:
-                    balance = 50.0
+                    balance = INITIAL_BALANCE
                 pnl_pct = pnl / balance if balance > 0 else 0.0
 
                 state["daily_pnl"] = state.get("daily_pnl", 0.0) + pnl_pct

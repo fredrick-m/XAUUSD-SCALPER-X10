@@ -113,12 +113,12 @@ class StrategyFactory(BaseAgent):
         return self.get_config("tick_interval", 300)
 
     def _family_stats(self) -> dict:
-        """Summarize actual tested evidence for every research family."""
+        """Summarize tested evidence once per strategy, never once per result row."""
         rows = self.db.fetchall(
             "SELECT s.family, COUNT(DISTINCT s.id) AS attempted, "
             "COUNT(DISTINCT CASE WHEN b.id IS NOT NULL THEN s.id END) AS evaluated, "
             "MAX(COALESCE(s.best_profit_factor,0)) AS max_pf, "
-            "SUM(CASE WHEN x.best_pf >= ? THEN 1 ELSE 0 END) AS good "
+            "COUNT(DISTINCT CASE WHEN x.best_pf >= ? THEN s.id END) AS good "
             "FROM strategies s "
             "LEFT JOIN backtest_results b ON b.strategy_id=s.id "
             "LEFT JOIN (SELECT strategy_id, MAX(profit_factor) AS best_pf "
@@ -134,13 +134,12 @@ class StrategyFactory(BaseAgent):
                 "attempted": int(r["attempted"] or 0),
                 "evaluated": evaluated,
                 "max_pf": float(r["max_pf"] or 0.0),
-                "good_ratio": good / evaluated if evaluated else 0.0,
+                "good_ratio": min(1.0, good / evaluated) if evaluated else 0.0,
             }
         return stats
 
     @staticmethod
     def _family_is_cold(s: dict) -> bool:
-        """Cold = enough evidence and still almost no sign of edge."""
         return (
             int(s.get("evaluated", 0)) >= FAMILY_MIN_EVALUATED
             and float(s.get("max_pf", 0.0)) < FAMILY_MIN_EDGE_PF
@@ -148,26 +147,18 @@ class StrategyFactory(BaseAgent):
         )
 
     def _choose_strategy_type(self) -> str:
-        """Balance exploration, exploitation and automatic family cooling."""
         stats = self._family_stats()
-
         untried = [f for f in STRATEGY_TYPES if stats.get(f, {}).get("attempted", 0) == 0]
         if untried:
             return random.choice(untried)
 
         cold = [f for f in STRATEGY_TYPES if self._family_is_cold(stats.get(f, {}))]
         active = [f for f in STRATEGY_TYPES if f not in cold]
-
-        # Occasionally retest a cooled family so regime/data changes can revive it.
         if cold and random.random() < FAMILY_REEXPLORE_PROB:
             return min(cold, key=lambda f: stats.get(f, {}).get("attempted", 0))
-
         if not active:
             active = STRATEGY_TYPES[:]
 
-        # UCB-like research score: reward actual good ratio/max PF, but also
-        # under-sampled families. This avoids both clone factories and starving
-        # promising families after only a few attempts.
         def research_score(f: str) -> float:
             s = stats.get(f, {})
             attempted = float(s.get("attempted", 0))

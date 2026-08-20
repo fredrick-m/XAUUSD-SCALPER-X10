@@ -27,7 +27,6 @@ def test_missing_equity_state_fails_closed(tmp_path):
             "(id, name, module_path, class_name, config) "
             "VALUES ('risk_manager','risk_manager','agents.risk_manager','RiskManager','{}')"
         )
-
         ready, reason = get_risk_readiness(db)
         assert ready is False
         assert reason == "risk_state_missing"
@@ -50,9 +49,7 @@ def test_weekly_breaker_promotes_existing_daily_lock(tmp_path):
             "weekly_drawdown": profile["max_weekly_dd"] + 0.01,
             "current_scaling": 0.0,
         }
-
         mgr._evaluate_breakers(state, profile)
-
         assert state["circuit_breaker_active"] is True
         assert state["circuit_breaker_scope"] == "weekly"
         assert state["circuit_breaker_reason"] == "weekly_dd"
@@ -66,19 +63,14 @@ def test_readiness_lock_blocks_position_scaling(tmp_path):
         db.init_schema()
         db.execute(
             "INSERT INTO agent_registry "
-            "(id, name, module_path, class_name, config) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(id, name, module_path, class_name, config) VALUES (?, ?, ?, ?, ?)",
             (
-                "risk_manager",
-                "risk_manager",
-                "agents.risk_manager",
-                "RiskManager",
-                '{"risk_profile":"x10_research","risk_state":'
+                "risk_manager", "risk_manager", "agents.risk_manager", "RiskManager",
+                '{"demo_execution_enabled":true,"risk_profile":"x10_research","risk_state":'
                 '{"equity_ready":false,"circuit_breaker_active":true,'
                 '"circuit_breaker_scope":"readiness","current_scaling":0.0}}',
             ),
         )
-
         ready, reason = get_risk_readiness(db)
         assert ready is False
         assert reason == "mt5_equity_unavailable"
@@ -87,25 +79,42 @@ def test_readiness_lock_blocks_position_scaling(tmp_path):
         db.close()
 
 
-def test_ready_state_allows_profile_scaling(tmp_path):
+def test_ready_state_is_still_blocked_until_demo_switch_enabled(tmp_path):
     db = Database(tmp_path / "risk.sqlite")
     try:
         db.init_schema()
         db.execute(
             "INSERT INTO agent_registry "
-            "(id, name, module_path, class_name, config) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(id, name, module_path, class_name, config) VALUES (?, ?, ?, ?, ?)",
             (
-                "risk_manager",
-                "risk_manager",
-                "agents.risk_manager",
-                "RiskManager",
+                "risk_manager", "risk_manager", "agents.risk_manager", "RiskManager",
                 '{"risk_profile":"x10_research","risk_state":'
                 '{"equity_ready":true,"circuit_breaker_active":false,'
                 '"current_scaling":0.5}}',
             ),
         )
+        ready, reason = get_risk_readiness(db)
+        assert ready is False
+        assert reason == "demo_execution_disabled"
+        assert get_position_scaling(db) == 0.0
+    finally:
+        db.close()
 
+
+def test_ready_state_allows_profile_scaling_only_after_switch_enabled(tmp_path):
+    db = Database(tmp_path / "risk.sqlite")
+    try:
+        db.init_schema()
+        db.execute(
+            "INSERT INTO agent_registry "
+            "(id, name, module_path, class_name, config) VALUES (?, ?, ?, ?, ?)",
+            (
+                "risk_manager", "risk_manager", "agents.risk_manager", "RiskManager",
+                '{"demo_execution_enabled":true,"risk_profile":"x10_research","risk_state":'
+                '{"equity_ready":true,"circuit_breaker_active":false,'
+                '"current_scaling":0.5}}',
+            ),
+        )
         ready, reason = get_risk_readiness(db)
         assert ready is True
         assert reason == "ready"

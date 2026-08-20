@@ -1,17 +1,19 @@
 """Portfolio selection agent.
 
 Ranks validated strategies by robust edge, removes highly correlated clones,
-and promotes only the diversified portfolio to ``validated`` status. Good but
-non-selected strategies remain ``portfolio_reserve`` so they can be promoted
-again on a later rebalance.
+and promotes only statistically credible diversified strategies to
+``validated``. Good but non-selected strategies remain ``portfolio_reserve``.
 
-The objective is to build toward 100+ genuinely different strategies, not to
-force 100 slots with weak or redundant variants.
+The selector is the final deployment gate before paper trading. It therefore
+adds a multiple-testing-aware confidence filter so a lucky winner among
+thousands of trials is not treated like a genuinely established edge.
 """
 
 import importlib.util
 import json
+import math
 from pathlib import Path
+from statistics import NormalDist
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -29,18 +31,29 @@ class CorrelationAgent(BaseAgent):
     TARGET_PORTFOLIO_SIZE = 100
     MAX_PER_FAMILY = 8
 
+    # Statistical deployment gate
+    BASE_ALPHA = 0.05
+    MIN_CONFIDENCE_TRADES = 60
+    MIN_ADJUSTED_WR_LB = 0.50
+    MIN_ADJUSTED_PF = 1.20
+    MAX_ADJUSTED_DD = 0.30
+
     def __init__(self, db):
         super().__init__(agent_id="correlation_agent", db=db)
         self._data_cache: Optional[pd.DataFrame] = None
         self._data_mtime: Optional[float] = None
 
     def setup(self):
-        self.logger.info("Portfolio selector ready")
+        self.logger.info("Portfolio selector V3 ready — multiple-testing confidence gate active")
 
     def tick(self):
-        strategies = self._get_candidates()
+        total_trials = self._tested_strategy_count()
+        strategies = self._get_candidates(total_trials)
         if len(strategies) < 2:
-            self.logger.info(f"Portfolio selector: only {len(strategies)} eligible strategies")
+            self.logger.info(
+                f"Portfolio selector: {len(strategies)} statistically eligible strategies "
+                f"after {total_trials} tested candidates"
+            )
             return
 
         df = self._load_data_m5()
@@ -62,13 +75,86 @@ class CorrelationAgent(BaseAgent):
 
         portfolio = self._build_portfolio(ids, corr, strat_map, scores, duplicate_of)
         self._apply_portfolio_state(strategies, portfolio, scores, duplicate_of)
-        self._store_portfolio_event(portfolio, scores, duplicate_of)
+        self._store_portfolio_event(portfolio, scores, duplicate_of, total_trials)
 
     def tick_interval(self) -> float:
         return self.get_config("tick_interval", 600)
 
-    def _get_candidates(self) -> List[dict]:
-        """Validated + reserve strategies that passed WF/holdout and have tests."""
+    def _tested_strategy_count(self) -> int:
+        row = self.db.fetchone(
+            "SELECT COUNT(DISTINCT strategy_id) AS n FROM backtest_results"
+        )
+        return max(1, int(row["n"] or 0) if row else 1)
+
+    def _latest_trade_count(self, strategy_id: str) -> int:
+        row = self.db.fetchone(
+            "SELECT total_trades FROM backtest_results WHERE strategy_id = ? "
+            "ORDER BY run_at DESC, id DESC LIMIT 1",
+            (strategy_id,),
+        )
+        return int(row["total_trades"] or 0) if row else 0
+
+    @staticmethod
+    def _wilson_lower_bound(wins: float, n: int, z: float) -> float:
+        if n <= 0:
+            return 0.0
+        p = min(max(float(wins) / n, 0.0), 1.0)
+        z2 = z * z
+        denom = 1.0 + z2 / n
+        center = p + z2 / (2.0 * n)
+        margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n)
+        return max(0.0, (center - margin) / denom)
+
+    def _statistical_gate(self, s: dict, total_trials: int) -> tuple[bool, dict]:
+        """Bonferroni-style family-wise error guard + effect-size floors.
+
+        ``alpha / total_trials`` is intentionally conservative. We cap the
+        resulting z-score to avoid numerical extremes once the research base
+        becomes very large; holdout/WF/Monte-Carlo remain independent layers.
+        """
+        sid = s["id"]
+        n = self._latest_trade_count(sid)
+        wr = float(s.get("best_win_rate") or 0.0)
+        pf = float(s.get("best_profit_factor") or 0.0)
+        dd = float(s.get("best_max_drawdown") or 1.0)
+
+        effective_alpha = max(1e-8, self.BASE_ALPHA / max(1, total_trials))
+        z = NormalDist().inv_cdf(1.0 - effective_alpha / 2.0)
+        z = min(max(z, 1.96), 4.5)
+        wins = round(wr * n)
+        wr_lb = self._wilson_lower_bound(wins, n, z)
+
+        # Evidence requirement grows slowly with the number of experiments.
+        # 60 baseline trades + 10 per decade of search breadth.
+        adaptive_min_trades = self.MIN_CONFIDENCE_TRADES + int(
+            10 * max(0.0, math.log10(max(1, total_trials)))
+        )
+        adaptive_pf = self.MIN_ADJUSTED_PF + min(
+            0.15, 0.03 * max(0.0, math.log10(max(1, total_trials)))
+        )
+
+        passed = (
+            n >= adaptive_min_trades
+            and wr_lb >= self.MIN_ADJUSTED_WR_LB
+            and pf >= adaptive_pf
+            and dd <= self.MAX_ADJUSTED_DD
+        )
+        evidence = {
+            "tested_universe": total_trials,
+            "trades": n,
+            "effective_alpha": effective_alpha,
+            "z": round(z, 4),
+            "wr": round(wr, 4),
+            "wr_lower_bound_adjusted": round(wr_lb, 4),
+            "pf": round(pf, 4),
+            "required_pf": round(adaptive_pf, 4),
+            "dd": round(dd, 4),
+            "required_min_trades": adaptive_min_trades,
+            "passed": passed,
+        }
+        return passed, evidence
+
+    def _get_candidates(self, total_trials: int) -> List[dict]:
         rows = self.db.fetchall(
             "SELECT DISTINCT s.id, s.file_path, s.family, s.best_profit_factor, "
             "s.best_win_rate, s.best_max_drawdown, s.regimes_passed, "
@@ -88,6 +174,11 @@ class CorrelationAgent(BaseAgent):
                 continue
             if cfg.get("sensitivity", {}).get("is_fragile", False):
                 continue
+
+            passed, evidence = self._statistical_gate(s, total_trials)
+            self._merge_config(s["id"], statistical_evidence=evidence)
+            if not passed:
+                continue
             result.append(s)
         return result
 
@@ -105,8 +196,7 @@ class CorrelationAgent(BaseAgent):
         rename = {"open": "Open", "high": "High", "low": "Low", "close": "Close",
                   "tick_volume": "Volume", "volume": "Volume"}
         df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
-        df = df.sort_values("time")
-        df = df.set_index("time")
+        df = df.sort_values("time").set_index("time")
         agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
         if "spread" in df.columns:
             agg["spread"] = "max"
@@ -208,24 +298,24 @@ class CorrelationAgent(BaseAgent):
             return {}
 
     def _score_strategy(self, s: dict) -> float:
-        """Composite score: edge + robustness + X10 potential - fragility."""
         pf = float(s.get("best_profit_factor") or 0.0)
         wr = float(s.get("best_win_rate") or 0.0)
         dd = float(s.get("best_max_drawdown") or 1.0)
         regimes = float(s.get("regimes_passed") or 0.0)
         cfg = self._config(s)
         mc = cfg.get("monte_carlo", {})
+        evidence = cfg.get("statistical_evidence", {})
 
         p_x10 = float(mc.get("p_x10_10d", mc.get("p_x10", 0.0)) or 0.0)
         p_ruin = float(mc.get("p_ruin_10d", mc.get("p_ruin", 0.0)) or 0.0)
         p95_dd = float(mc.get("p95_dd_10d", mc.get("p95_dd", dd)) or dd)
+        wr_lb = float(evidence.get("wr_lower_bound_adjusted", 0.0) or 0.0)
 
-        # 0..100-ish score. X10 probability is rewarded but cannot compensate
-        # for a weak/fragile statistical edge.
         score = 0.0
-        score += min(max((pf - 1.0) / 1.5, 0.0), 1.0) * 30.0
-        score += min(max((wr - 0.50) / 0.30, 0.0), 1.0) * 20.0
-        score += max(0.0, 1.0 - dd / 0.35) * 15.0
+        score += min(max((pf - 1.0) / 1.5, 0.0), 1.0) * 25.0
+        score += min(max((wr - 0.50) / 0.30, 0.0), 1.0) * 12.0
+        score += min(max((wr_lb - 0.50) / 0.15, 0.0), 1.0) * 15.0
+        score += max(0.0, 1.0 - dd / 0.35) * 13.0
         score += min(regimes / 3.0, 1.0) * 10.0
         score += min(p_x10 / 0.25, 1.0) * 15.0
         score += max(0.0, 1.0 - p95_dd / 0.50) * 10.0
@@ -256,8 +346,7 @@ class CorrelationAgent(BaseAgent):
             idx = id_to_idx[sid]
             max_corr = 0.0
             for existing in portfolio:
-                c = abs(float(corr[idx, id_to_idx[existing]]))
-                max_corr = max(max_corr, c)
+                max_corr = max(max_corr, abs(float(corr[idx, id_to_idx[existing]])))
             threshold = float(self.get_config("portfolio_corr_threshold", self.PORTFOLIO_CORR_THRESHOLD))
             if portfolio and max_corr >= threshold:
                 continue
@@ -295,18 +384,21 @@ class CorrelationAgent(BaseAgent):
                 redundant_of=duplicate_of.get(sid),
             )
 
-    def _store_portfolio_event(self, portfolio, scores, duplicate_of):
+    def _store_portfolio_event(self, portfolio, scores, duplicate_of, total_trials):
         ranked = sorted(portfolio, key=lambda sid: scores.get(sid, 0.0), reverse=True)
         self.emit_event(
             "milestone",
-            f"Portfolio selected: {len(portfolio)} robust/diversified strategies "
-            f"(target={self.get_config('target_portfolio_size', self.TARGET_PORTFOLIO_SIZE)})",
+            f"Portfolio selected: {len(portfolio)} statistically robust/diversified strategies "
+            f"from {total_trials} tested candidates",
             metadata={
-                "type": "portfolio_composition_v2",
+                "type": "portfolio_composition_v3",
+                "tested_universe": total_trials,
                 "strategies": ranked,
                 "scores": {sid: scores[sid] for sid in ranked},
                 "reserve_duplicates": duplicate_of,
                 "count": len(ranked),
             },
         )
-        self.logger.info(f"Portfolio V2: {len(ranked)} selected; top={ranked[:10]}")
+        self.logger.info(
+            f"Portfolio V3: {len(ranked)} selected from {total_trials} tested; top={ranked[:10]}"
+        )

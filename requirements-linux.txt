@@ -1,0 +1,12 @@
+# Linux 24/7 research runtime.
+# MetaTrader5 is intentionally excluded: official MT5 execution runs on the
+# separate Windows demo node. paper_trade stays dry-run on Linux.
+anthropic>=0.40.0
+pandas>=2.0
+numpy>=1.24
+ta>=0.11.0
+optuna>=3.6
+flask>=3.0
+plotly>=5.18
+requests>=2.31
+pytest>=8.0

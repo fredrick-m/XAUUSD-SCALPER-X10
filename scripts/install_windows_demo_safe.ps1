@@ -36,8 +36,16 @@ if (-not (Test-Path $venvPython)) { throw "Virtualenv Python not found: $venvPyt
 & $venvPython -m pip install -r (Join-Path $projectRoot "requirements.txt")
 
 Write-Host ""
+Write-Host "Reserving safe runtime strategy ID floors..." -ForegroundColor Cyan
+& $venvPython -m scripts.ensure_strategy_id_floor
+
+Write-Host ""
 Write-Host "Installing backtest metric-version guard..." -ForegroundColor Cyan
 & $venvPython -m scripts.ensure_backtest_metric_guard
+
+Write-Host ""
+Write-Host "Invalidating evidence whose strategy source changed..." -ForegroundColor Cyan
+& $venvPython -m scripts.invalidate_changed_strategy_evidence
 
 Write-Host ""
 Write-Host "Forcing execution master switch OFF..." -ForegroundColor Yellow

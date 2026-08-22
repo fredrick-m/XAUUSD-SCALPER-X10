@@ -6,6 +6,7 @@ TARGET="${TARGET:-$APP_DIR/data/raw/XAUUSD_M1_DUKASCOPY_AUTO.csv}"
 CACHE_DIR="${CACHE_DIR:-/opt/xauusd-data-cache/daily}"
 LOCK_FILE="${LOCK_FILE:-/var/lock/xauusd-data-update.lock}"
 SERVICE_NAME="${SERVICE_NAME:-xauusd-scalper-x10}"
+export APP_DIR TARGET CACHE_DIR SERVICE_NAME
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "another update is already running"; exit 0; }
@@ -27,9 +28,10 @@ mkdir -p "$CACHE_DIR"
 rm -f "$CACHE_DIR/XAUUSD_M1_RECENT.csv"
 
 FROM=$("$APP_DIR/.venv/bin/python" - <<'PY'
+import os
 import pandas as pd
 from pathlib import Path
-p = Path('/opt/xauusd-scalper-x10/data/raw/XAUUSD_M1_DUKASCOPY_AUTO.csv')
+p = Path(os.environ['TARGET'])
 df = pd.read_csv(p, usecols=['time'], parse_dates=['time'])
 last = pd.to_datetime(df['time']).max()
 print((last - pd.Timedelta(days=7)).strftime('%Y-%m-%d'))
@@ -57,8 +59,8 @@ import os
 import pandas as pd
 from pathlib import Path
 
-target = Path(os.environ.get('TARGET', '/opt/xauusd-scalper-x10/data/raw/XAUUSD_M1_DUKASCOPY_AUTO.csv'))
-recent = Path(os.environ.get('CACHE_DIR', '/opt/xauusd-data-cache/daily')) / 'XAUUSD_M1_RECENT.csv'
+target = Path(os.environ['TARGET'])
+recent = Path(os.environ['CACHE_DIR']) / 'XAUUSD_M1_RECENT.csv'
 
 old = pd.read_csv(target, parse_dates=['time'])
 old_rows = len(old)

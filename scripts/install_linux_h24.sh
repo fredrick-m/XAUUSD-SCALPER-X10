@@ -16,7 +16,9 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y git python3 python3-venv python3-pip build-essential curl ca-certificates
+apt-get install -y \
+  git python3 python3-venv python3-pip build-essential curl ca-certificates \
+  nodejs npm util-linux
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
@@ -41,8 +43,8 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<'EOF'
-# Optional but recommended for autonomous LLM agents.
-# Add the value securely, then restart the service:
+# Optional for LLM-backed agents; deterministic research works without it.
+# Add securely later, never in chat:
 # ANTHROPIC_API_KEY=...
 PYTHONUNBUFFERED=1
 EOF
@@ -76,9 +78,18 @@ ReadWritePaths=$APP_DIR
 WantedBy=multi-user.target
 EOF
 
+chmod +x "$APP_DIR/scripts/update_xauusd_data.sh" "$APP_DIR/scripts/install_xauusd_data_timer.sh"
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
+
+# Install the daily updater only when a validated base dataset already exists.
+# A fresh host can receive/bootstrap the large historical CSV separately.
+if [[ -f "$APP_DIR/data/raw/XAUUSD_M1_DUKASCOPY_AUTO.csv" ]]; then
+  "$APP_DIR/scripts/install_xauusd_data_timer.sh"
+else
+  echo "Data timer not enabled yet: base XAUUSD_M1_DUKASCOPY_AUTO.csv is missing."
+fi
 
 sleep 2
 systemctl --no-pager --full status "$SERVICE_NAME" || true
@@ -89,5 +100,4 @@ echo "Branch:    $BRANCH"
 echo "Service:   $SERVICE_NAME"
 echo "Logs:      journalctl -u $SERVICE_NAME -f"
 echo "Status:    systemctl status $SERVICE_NAME"
-echo "Restart:   systemctl restart $SERVICE_NAME"
 echo "Research runs 24/7. MT5 execution remains unavailable/locked on Linux."

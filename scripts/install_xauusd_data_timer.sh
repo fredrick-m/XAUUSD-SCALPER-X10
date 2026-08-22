@@ -10,9 +10,16 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-if [[ ! -x "$APP_DIR/scripts/update_xauusd_data.sh" ]]; then
-  chmod +x "$APP_DIR/scripts/update_xauusd_data.sh"
+missing=()
+command -v npx >/dev/null 2>&1 || missing+=(nodejs npm)
+command -v flock >/dev/null 2>&1 || missing+=(util-linux)
+if ((${#missing[@]})); then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y "${missing[@]}"
 fi
+
+chmod +x "$APP_DIR/scripts/update_xauusd_data.sh"
 
 cat > "$SERVICE_UNIT" <<EOF
 [Unit]

@@ -65,6 +65,7 @@ WorkingDirectory=$APP_DIR
 EnvironmentFile=-$ENV_FILE
 ExecStartPre=$APP_DIR/.venv/bin/python -m scripts.ensure_strategy_id_floor
 ExecStartPre=$APP_DIR/.venv/bin/python -m scripts.ensure_backtest_metric_guard
+ExecStartPre=$APP_DIR/.venv/bin/python -m scripts.materialize_optimizer_params
 ExecStartPre=$APP_DIR/.venv/bin/python -m scripts.invalidate_changed_strategy_evidence
 ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/start.py
 Restart=always

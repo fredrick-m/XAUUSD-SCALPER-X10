@@ -63,6 +63,7 @@ User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=-$ENV_FILE
+ExecStartPre=$APP_DIR/.venv/bin/python -m scripts.ensure_backtest_metric_guard
 ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/start.py
 Restart=always
 RestartSec=10
@@ -83,8 +84,6 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
-# Install the daily updater only when a validated base dataset already exists.
-# A fresh host can receive/bootstrap the large historical CSV separately.
 if [[ -f "$APP_DIR/data/raw/XAUUSD_M1_DUKASCOPY_AUTO.csv" ]]; then
   "$APP_DIR/scripts/install_xauusd_data_timer.sh"
 else

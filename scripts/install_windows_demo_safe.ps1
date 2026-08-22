@@ -44,6 +44,10 @@ Write-Host "Installing backtest metric-version guard..." -ForegroundColor Cyan
 & $venvPython -m scripts.ensure_backtest_metric_guard
 
 Write-Host ""
+Write-Host "Materializing optimizer parameters for full revalidation..." -ForegroundColor Cyan
+& $venvPython -m scripts.materialize_optimizer_params
+
+Write-Host ""
 Write-Host "Invalidating evidence whose strategy source changed..." -ForegroundColor Cyan
 & $venvPython -m scripts.invalidate_changed_strategy_evidence
 

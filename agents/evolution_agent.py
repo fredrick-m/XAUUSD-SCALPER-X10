@@ -65,19 +65,21 @@ class EvolutionAgent(BaseAgent):
             pf = float(strat.get("best_profit_factor") or 0.0)
             p_x10 = float(strat.get("p_x10_10d") or 0.0)
 
-            # For high-quality but low-frequency edges, first try to increase
-            # signal frequency without destroying the core hypothesis.
+            # High-quality low-frequency parents are close to useful. Preserve
+            # the edge and make only a SMALL move toward more frequency. The
+            # previous broad relaxation frequently jumped from ~40 trades to
+            # 200+ and destroyed PF/WR.
             if pf >= 1.5 and 0 < trades < 100:
-                child = self._mutate_params(params, 0.35, 0.12)
+                child = self._mutate_params(params, 0.18, 0.06)
                 child = self._relax_entry_thresholds(child)
-                desc = f"Frequency-directed V2 mutation of {sid}"
+                desc = f"Gentle frequency-directed V2 mutation of {sid}"
             else:
                 # Strong x10 candidates get gentler local search; ordinary
                 # promising parents get broader exploration.
                 if p_x10 >= 0.05:
-                    child = self._mutate_params(params, 0.35, 0.15)
+                    child = self._mutate_params(params, 0.30, 0.12)
                 else:
-                    child = self._mutate_params(params, 0.55, 0.25)
+                    child = self._mutate_params(params, 0.45, 0.18)
                 desc = f"Edge-directed V2 mutation of {sid}"
 
             evo_id = self._next_evolution_id()
@@ -205,32 +207,41 @@ class EvolutionAgent(BaseAgent):
 
     @staticmethod
     def _relax_entry_thresholds(params: dict) -> dict:
+        """Gently increase frequency while preserving a proven parent edge.
+
+        This deliberately makes only small threshold moves. Session bounds are
+        left unchanged and cooldown is reduced by at most one bar.
+        """
         p = dict(params)
         for k in ("rsi_low", "mfi_low", "uo_low", "stoch_low", "cci_low"):
             if isinstance(p.get(k), (int, float)):
-                p[k] = round(p[k] + random.uniform(2, 6), 4)
+                p[k] = round(p[k] + random.uniform(0.5, 2.0), 4)
         for k in ("rsi_high", "mfi_high", "uo_high", "stoch_high", "cci_high"):
             if isinstance(p.get(k), (int, float)):
-                p[k] = round(p[k] - random.uniform(2, 6), 4)
+                p[k] = round(p[k] - random.uniform(0.5, 2.0), 4)
         if isinstance(p.get("bb_std"), (int, float)):
-            p["bb_std"] = round(max(1.2, p["bb_std"] - random.uniform(0.1, 0.35)), 4)
+            p["bb_std"] = round(max(1.2, p["bb_std"] - random.uniform(0.03, 0.12)), 4)
         for k in ("adx_threshold", "adx_floor"):
             if isinstance(p.get(k), (int, float)):
-                p[k] = max(12, int(round(p[k] - random.uniform(2, 5))))
+                p[k] = max(12, int(round(p[k] - random.uniform(0.5, 2.0))))
         if isinstance(p.get("cooldown"), (int, float)):
-            p["cooldown"] = max(1, int(round(p["cooldown"] * random.uniform(0.6, 0.9))))
+            current = max(1, int(round(p["cooldown"])))
+            p["cooldown"] = max(1, current - random.choice((0, 0, 1)))
         return p
 
     @staticmethod
     def _mutate_params(params: dict, mutation_rate: float, mutation_range: float) -> dict:
         child = {}
-        protected = {"sl_atr", "tp_atr"}
+        # Preserve execution geometry/frequency controls during generic
+        # mutation. Frequency-directed mutations adjust cooldown separately
+        # and never mutate the trading session window.
+        protected = {"sl_atr", "tp_atr", "cooldown", "session_start", "session_end"}
         for key, value in params.items():
             if isinstance(value, bool):
                 child[key] = value
                 continue
             if isinstance(value, (int, float)) and random.random() < mutation_rate:
-                local_range = min(mutation_range, 0.15) if key in protected else mutation_range
+                local_range = min(mutation_range, 0.05) if key in protected else mutation_range
                 factor = 1.0 + random.uniform(-local_range, local_range)
                 nv = value * factor
                 if value > 0:
@@ -296,10 +307,9 @@ class EvolutionAgent(BaseAgent):
             (evo_id, str(file_path), family, description, parent_generation + 1,
              parent_id, self.agent_id, "candidate"),
         )
-        self.post_task(
-            target_agent="backtest_runner", task_type="backtest",
-            payload={"strategy_id": evo_id, "file_path": str(file_path)}, priority=4,
-        )
+        # The parallel backtest runner already discovers every untested
+        # candidate directly. Posting a second task here caused duplicate
+        # simulations/results for the same strategy, so no task is queued.
         self.logger.info(f"Created {evo_id} from {parent_id}")
         return True
 

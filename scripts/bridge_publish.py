@@ -1,7 +1,7 @@
 """Publish a fail-closed deployment manifest for the Windows MT5 execution node.
 
 The Linux VPS remains the source of truth. This publisher exports only
-Portfolio V5-selected strategies and NEVER enables order execution.
+Portfolio V5-selected strategies and NEVER enables order execution by itself.
 """
 from __future__ import annotations
 
@@ -106,9 +106,19 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": "linux-vps",
         "execution_enabled": False,
+        "entry_allowed": False,
         "account_mode_required": "demo",
         "symbol": "XAUUSD",
         "metric_version": "x10_10d_v2",
+        "risk_policy": {
+            "profile": "x10_research",
+            "risk_per_trade": 0.04,
+            "max_daily_dd": 0.10,
+            "max_weekly_dd": 0.20,
+            "max_portfolio_heat": 0.20,
+            "max_open_trades": 12,
+            "max_consecutive_losses": 5,
+        },
         "strategies": strategies,
     }
     _atomic_json(MANIFEST, payload)

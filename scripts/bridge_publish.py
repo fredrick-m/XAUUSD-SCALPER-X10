@@ -40,6 +40,7 @@ def _atomic_json(path: Path, payload: dict) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, path)
+        os.chmod(path, 0o640)
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)

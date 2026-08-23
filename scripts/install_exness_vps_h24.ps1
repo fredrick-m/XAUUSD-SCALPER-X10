@@ -86,7 +86,7 @@ $cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($cred.Password)
 try {
     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    $action = New-ScheduledTaskAction -Execute $runner -WorkingDirectory $ProjectDir
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument "/c `"$runner`"" -WorkingDirectory $ProjectDir
     $startup = New-ScheduledTaskTrigger -AtStartup
     $logon = New-ScheduledTaskTrigger -AtLogOn -User $cred.UserName
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

@@ -17,7 +17,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from core.config import BACKTEST_METRIC_VERSION, DB_PATH
+from core.config import BACKTEST_METRIC_VERSION, BASE_DIR, DB_PATH
 from core.db import Database
 
 NEWS_MAX_AGE_MINUTES = 90
@@ -181,8 +181,8 @@ def _check_risk(db: Database) -> tuple[bool, str]:
             return False, "risk state missing"
         if not state.get("equity_ready", False):
             return False, "MT5 equity not anchored"
-        if state.get("equity_anchor_source") != "mt5":
-            return False, "equity anchor is not MT5"
+        if state.get("equity_anchor_source") not in {"mt5", "mt5_bridge"}:
+            return False, "equity anchor is not a real MT5 source"
         if state.get("circuit_breaker_active", False):
             return False, f"circuit breaker active ({state.get('circuit_breaker_scope', 'unknown')})"
         equity = float(state.get("current_equity") or 0.0)
@@ -204,41 +204,55 @@ def _check_risk(db: Database) -> tuple[bool, str]:
 
 
 def _check_mt5() -> tuple[bool, str]:
+    """Validate the dedicated Windows MT5 bridge heartbeat, not local MT5."""
+    path = BASE_DIR / "bridge" / "inbox" / "heartbeat.json"
+    if not path.is_file():
+        return False, "MT5 bridge heartbeat missing"
     try:
-        import MetaTrader5 as mt5
-    except ImportError:
-        return False, "MetaTrader5 Python package not installed"
+        hb = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"MT5 bridge heartbeat unreadable: {exc}"
 
-    if not mt5.initialize():
-        return False, f"MT5 initialize failed: {mt5.last_error()}"
+    if hb.get("schema") != "xauusd-mt5-heartbeat-v1":
+        return False, "MT5 bridge heartbeat schema invalid"
     try:
-        account = mt5.account_info()
-        if account is None:
-            return False, f"MT5 account_info unavailable: {mt5.last_error()}"
-        if int(getattr(account, "trade_mode", -1)) != 0:
-            return False, f"account is NOT demo (trade_mode={getattr(account, 'trade_mode', None)})"
-        equity = float(getattr(account, "equity", 0.0) or 0.0)
-        balance = float(getattr(account, "balance", 0.0) or 0.0)
-        if equity <= 0 or balance <= 0:
-            return False, f"invalid demo equity/balance ({equity}/{balance})"
-        if hasattr(account, "trade_allowed") and not bool(account.trade_allowed):
-            return False, "account trade_allowed is false"
-        if hasattr(account, "trade_expert") and not bool(account.trade_expert):
-            return False, "account automated trading is disabled"
-        if not mt5.symbol_select("XAUUSD", True):
-            return False, f"XAUUSD symbol_select failed: {mt5.last_error()}"
-        info = mt5.symbol_info("XAUUSD")
-        tick = mt5.symbol_info_tick("XAUUSD")
-        if info is None or tick is None:
-            return False, "XAUUSD symbol/tick unavailable"
-        if float(getattr(tick, "ask", 0.0) or 0.0) <= 0 or float(getattr(tick, "bid", 0.0) or 0.0) <= 0:
-            return False, "XAUUSD bid/ask invalid"
-        return True, (
-            f"demo account #{getattr(account, 'login', '?')} equity=${equity:.2f} "
-            f"balance=${balance:.2f} XAUUSD={tick.bid:.2f}/{tick.ask:.2f}"
-        )
-    finally:
-        mt5.shutdown()
+        at = datetime.fromisoformat(str(hb.get("at", "")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - at.astimezone(timezone.utc)).total_seconds()
+    except Exception:
+        return False, "MT5 bridge heartbeat timestamp invalid"
+    if age < 0 or age > 90:
+        return False, f"MT5 bridge heartbeat stale ({age:.0f}s)"
+
+    required_true = {
+        "mt5_connected": "MT5 not connected on Windows VPS",
+        "demo": "Windows MT5 account is not demo",
+        "account_match": "Windows MT5 account no longer matches bound demo account",
+        "trade_allowed": "Windows MT5 trade_allowed is false",
+        "trade_expert": "Windows MT5 Algo Trading is disabled",
+        "symbol_ok": "Windows MT5 XAUUSD symbol/tick unavailable",
+        "manifest_fresh": "Windows bridge manifest is stale",
+    }
+    for key, reason in required_true.items():
+        if hb.get(key) is not True:
+            return False, reason
+
+    equity = float(hb.get("equity") or 0.0)
+    balance = float(hb.get("balance") or 0.0)
+    if equity <= 0 or balance <= 0:
+        return False, f"invalid demo equity/balance ({equity}/{balance})"
+    symbol = str(hb.get("symbol") or "")
+    bid = float(hb.get("bid") or 0.0)
+    ask = float(hb.get("ask") or 0.0)
+    if not symbol.upper().startswith("XAUUSD") or bid <= 0 or ask <= 0 or ask < bid:
+        return False, f"invalid XAUUSD bridge quote ({symbol} {bid}/{ask})"
+
+    selected = ",".join(str(x) for x in hb.get("selected_strategies", [])) or "none"
+    return True, (
+        f"Windows MT5 bridge fresh ({age:.0f}s); demo equity=${equity:.2f} "
+        f"balance=${balance:.2f} {symbol}={bid:.3f}/{ask:.3f}; selected={selected}"
+    )
 
 
 def run_preflight(db: Database) -> tuple[bool, list[tuple[str, bool, str]]]:

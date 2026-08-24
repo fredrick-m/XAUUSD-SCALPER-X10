@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from agents.base_agent import BaseAgent
-from core.config import PIP_VALUE, DEFAULT_RISK_PCT
+from core.config import BASE_DIR, PIP_VALUE, DEFAULT_RISK_PCT
 
 
 RISK_PROFILES = {
@@ -117,10 +117,12 @@ class RiskManager(BaseAgent):
 
         self._ensure_equity_anchors(state, equity, now)
         self._reset_periods_if_needed(state, equity, now)
+        source = getattr(self, "_last_equity_source", "unavailable")
+        sample_at = getattr(self, "_last_equity_at", None) or now.isoformat()
         state["equity_ready"] = True
-        state["equity_source"] = "mt5"
+        state["equity_source"] = source
         state["current_equity"] = equity
-        state["last_equity_at"] = now.isoformat()
+        state["last_equity_at"] = sample_at
 
         daily_peak = float(state.get("daily_peak_equity") or equity)
         weekly_peak = float(state.get("weekly_peak_equity") or equity)
@@ -160,21 +162,59 @@ class RiskManager(BaseAgent):
         return max(0.0, (reference - equity) / reference)
 
     def _current_equity(self) -> Optional[float]:
-        """Return a real MT5 equity sample, never a synthetic live fallback."""
+        """Return a fresh real broker equity sample; never synthesize one."""
+        self._last_equity_source = "unavailable"
+        self._last_equity_at = None
+
+        # Preferred architecture on Linux: fresh MT5 heartbeat from the
+        # dedicated Windows execution VPS. Fail closed if it is stale or if
+        # any broker/account/symbol safety invariant is false.
+        heartbeat_path = BASE_DIR / "bridge" / "inbox" / "heartbeat.json"
+        try:
+            raw = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+            sample_at = datetime.fromisoformat(str(raw.get("at", "")))
+            if sample_at.tzinfo is None:
+                sample_at = sample_at.replace(tzinfo=timezone.utc)
+            sample_at = sample_at.astimezone(timezone.utc)
+            age = (datetime.now(timezone.utc) - sample_at).total_seconds()
+            bridge_ok = (
+                raw.get("schema") == "xauusd-mt5-heartbeat-v1"
+                and 0 <= age <= 90
+                and raw.get("mt5_connected") is True
+                and raw.get("demo") is True
+                and raw.get("account_match") is True
+                and raw.get("trade_allowed") is True
+                and raw.get("trade_expert") is True
+                and raw.get("symbol_ok") is True
+            )
+            equity = float(raw.get("equity") or 0.0)
+            if bridge_ok and equity > 0:
+                self._last_equity_source = "mt5_bridge"
+                self._last_equity_at = sample_at.isoformat()
+                return equity
+        except Exception:
+            pass
+
+        # Local MT5 remains an allowed fallback for a Windows-hosted copy of
+        # the project, but Linux never fabricates equity when MT5 is absent.
         try:
             import MetaTrader5 as mt5
             account = mt5.account_info()
             if account is not None:
                 equity = float(getattr(account, "equity", 0.0) or 0.0)
                 if equity > 0:
+                    self._last_equity_source = "mt5"
+                    self._last_equity_at = datetime.now(timezone.utc).isoformat()
                     return equity
         except Exception:
             pass
         return None
 
     def _ensure_equity_anchors(self, state: dict, equity: float, now: datetime):
+        source = getattr(self, "_last_equity_source", "unavailable")
         anchors_valid = (
-            state.get("equity_anchor_source") == "mt5"
+            source in {"mt5", "mt5_bridge"}
+            and state.get("equity_anchor_source") == source
             and state.get("daily_start_equity") is not None
             and state.get("weekly_start_equity") is not None
             and state.get("daily_peak_equity") is not None
@@ -189,13 +229,13 @@ class RiskManager(BaseAgent):
             state["weekly_peak_equity"] = equity
             state["daily_drawdown"] = 0.0
             state["weekly_drawdown"] = 0.0
-            state["equity_anchor_source"] = "mt5"
+            state["equity_anchor_source"] = source
         state["equity_ready"] = True
-        state["equity_source"] = "mt5"
+        state["equity_source"] = source
         state["current_equity"] = equity
-        state["last_equity_at"] = now.isoformat()
+        state["last_equity_at"] = getattr(self, "_last_equity_at", None) or now.isoformat()
         if state.get("circuit_breaker_scope") == "readiness":
-            self._clear_circuit_breaker(state, "MT5 equity available")
+            self._clear_circuit_breaker(state, "Fresh broker equity available")
 
     def _lock_for_equity_unavailable(self, state: dict):
         if state.get("circuit_breaker_active"):

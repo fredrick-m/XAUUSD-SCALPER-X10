@@ -1,7 +1,7 @@
 """Publish a fail-closed deployment manifest for the Windows MT5 execution node.
 
 The Linux VPS remains the source of truth. This publisher exports only
-Portfolio V5-selected strategies and NEVER enables order execution by itself.
+Portfolio V5-selected strategies and NEVER enables order execution.
 """
 from __future__ import annotations
 
@@ -15,11 +15,27 @@ from pathlib import Path
 
 from core.config import BASE_DIR, DB_PATH
 from core.db import Database
+from agents.risk_manager import DEFAULT_RISK_PROFILE, RISK_PROFILES
+from scripts.demo_preflight import run_preflight
 
 BRIDGE_DIR = BASE_DIR / "bridge"
 OUTBOX = BRIDGE_DIR / "outbox"
 STRATEGY_DIR = OUTBOX / "strategies"
 MANIFEST = OUTBOX / "deployment.json"
+
+
+def _risk_config(db: Database) -> dict:
+    row = db.fetchone("SELECT config FROM agent_registry WHERE id='risk_manager'")
+    if not row or not row["config"]:
+        return {}
+    raw = row["config"]
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
 
 
 def _sha256(path: Path) -> str:
@@ -99,6 +115,20 @@ def main() -> int:
     db = Database(DB_PATH)
     try:
         strategies = selected_strategies(db)
+        cfg = _risk_config(db)
+        profile_name = str(cfg.get("risk_profile") or DEFAULT_RISK_PROFILE)
+        profile = dict(RISK_PROFILES.get(profile_name, RISK_PROFILES[DEFAULT_RISK_PROFILE]))
+        switch_requested = cfg.get("demo_execution_enabled") is True
+
+        preflight_ready = False
+        blockers: list[str] = []
+        if switch_requested:
+            ready, results = run_preflight(db)
+            preflight_ready = bool(ready)
+            blockers = [f"{name}:{detail}" for name, ok, detail in results if not ok]
+
+        execution_enabled = bool(switch_requested and preflight_ready and strategies)
+        entry_allowed = execution_enabled
     finally:
         db.close()
 
@@ -106,24 +136,25 @@ def main() -> int:
         "schema": "xauusd-mt5-bridge-v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": "linux-vps",
-        "execution_enabled": False,
-        "entry_allowed": False,
+        "execution_enabled": execution_enabled,
+        "entry_allowed": entry_allowed,
+        "demo_switch_requested": switch_requested,
+        "preflight_ready": preflight_ready,
+        "preflight_blockers": blockers[:8],
         "account_mode_required": "demo",
         "symbol": "XAUUSD",
         "metric_version": "x10_10d_v2",
-        "risk_policy": {
-            "profile": "x10_research",
-            "risk_per_trade": 0.04,
-            "max_daily_dd": 0.10,
-            "max_weekly_dd": 0.20,
-            "max_portfolio_heat": 0.20,
-            "max_open_trades": 12,
-            "max_consecutive_losses": 5,
-        },
+        "risk_policy": {"profile": profile_name, **profile},
         "strategies": strategies,
     }
     _atomic_json(MANIFEST, payload)
-    print(f"published={MANIFEST} selected={len(strategies)} execution_enabled=false")
+    print(
+        f"published={MANIFEST} selected={len(strategies)} "
+        f"switch_requested={switch_requested} preflight_ready={preflight_ready} "
+        f"execution_enabled={execution_enabled}"
+    )
+    for blocker in blockers[:5]:
+        print(f"BLOCK {blocker}")
     for s in strategies:
         print(f"{s['id']} sha256={s['sha256']} score={s['portfolio_score']}")
     return 0
